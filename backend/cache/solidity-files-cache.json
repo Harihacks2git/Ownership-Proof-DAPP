@@ -1,0 +1,77 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "/media/hari/Programs/FYP/Dapp/backend/contracts/ownership.sol": {
+      "lastModificationDate": 1766054303024,
+      "contentHash": "33044af3a2c0a66a91dae21f442c256c",
+      "sourceName": "contracts/ownership.sol",
+      "solcConfig": {
+        "version": "0.8.28",
+        "settings": {
+          "evmVersion": "paris",
+          "optimizer": {
+            "enabled": false,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.19"
+      ],
+      "artifacts": [
+        "ContentRegistry"
+      ]
+    },
+    "/media/hari/Programs/FYP/Dapp/backend/contracts/ownership_original.sol": {
+      "lastModificationDate": 1765973160282,
+      "contentHash": "a37649a5419348607fbbb7aa0d824d5c",
+      "sourceName": "contracts/ownership_original.sol",
+      "solcConfig": {
+        "version": "0.8.28",
+        "settings": {
+          "evmVersion": "paris",
+          "optimizer": {
+            "enabled": false,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.19"
+      ],
+      "artifacts": [
+        "ContentRegistry"
+      ]
+    }
+  }
+}
