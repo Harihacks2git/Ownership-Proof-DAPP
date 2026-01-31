@@ -1,8 +1,8 @@
 {
   "_format": "hh-sol-cache-2",
   "files": {
-    "/media/hari/Programs/FYP/Dapp/backend/contracts/ownership.sol": {
-      "lastModificationDate": 1766054303024,
+    "/Users/hariprvs/Ownership-Proof-DAPP/backend/contracts/ownership.sol": {
+      "lastModificationDate": 1769697178456,
       "contentHash": "33044af3a2c0a66a91dae21f442c256c",
       "sourceName": "contracts/ownership.sol",
       "solcConfig": {
@@ -37,8 +37,8 @@
         "ContentRegistry"
       ]
     },
-    "/media/hari/Programs/FYP/Dapp/backend/contracts/ownership_original.sol": {
-      "lastModificationDate": 1765973160282,
+    "/Users/hariprvs/Ownership-Proof-DAPP/backend/contracts/ownership_original.sol": {
+      "lastModificationDate": 1769697178457,
       "contentHash": "a37649a5419348607fbbb7aa0d824d5c",
       "sourceName": "contracts/ownership_original.sol",
       "solcConfig": {

@@ -15,13 +15,24 @@ contract ContentRegistry {
         uint256[] timeHistory;
     }
 
+    struct TransferRequest {
+        address requester;
+        uint256 price; // 0 for free transfer
+        bool isPending;
+        uint256 timestamp;
+    }
+
     mapping(string => bool) private cidExists;
     mapping(string => Content) private contents; // keyed by contentID / CID or some ID
     mapping(address => string[]) private userContents;
+    mapping(string => TransferRequest) private transferRequests; // contentId => pending request
 
     event ContentRegistered(string indexed contentId, address indexed owner, uint256 timestamp);
     event ContentTransferred(string indexed contentId, address indexed from, address indexed to, uint256 timestamp);
     event ContentAuthorityUpdated(string indexed contentId, string oldCid, string newCid, address indexed authority, uint256 timestamp);
+    event OwnershipRequested(string indexed contentId, address indexed requester, uint256 price, uint256 timestamp);
+    event OwnershipApproved(string indexed contentId, address indexed owner, address indexed buyer, uint256 timestamp);
+    event OwnershipRejected(string indexed contentId, address indexed owner, address indexed requester, uint256 timestamp);
 
     modifier onlyAuthority() {
         require(msg.sender == authority, "only authority can call");
@@ -97,5 +108,63 @@ contract ContentRegistry {
 
     function isContentRegistered(string memory _cid) public view returns (bool) {
         return cidExists[_cid];
+    }
+
+    // Request ownership transfer (buyer initiates)
+    function requestOwnership(string memory contentId, uint256 price) public {
+        require(cidExists[contentId], "Content not registered");
+        Content storage c = contents[contentId];
+        require(msg.sender != c.owner, "Owner cannot request own content");
+        require(!transferRequests[contentId].isPending, "Request already pending");
+
+        transferRequests[contentId] = TransferRequest({
+            requester: msg.sender,
+            price: price,
+            isPending: true,
+            timestamp: block.timestamp
+        });
+
+        emit OwnershipRequested(contentId, msg.sender, price, block.timestamp);
+    }
+
+    // Approve transfer request (owner approves)
+    function approveTransfer(string memory contentId) public {
+        require(cidExists[contentId], "Content not registered");
+        Content storage c = contents[contentId];
+        require(msg.sender == c.owner, "Only owner can approve");
+        TransferRequest storage req = transferRequests[contentId];
+        require(req.isPending, "No pending request");
+
+        address buyer = req.requester;
+        req.isPending = false;
+
+        // Transfer ownership
+        address prev = c.owner;
+        c.owner = buyer;
+        c.ownerHistory.push(buyer);
+        c.timeHistory.push(block.timestamp);
+        userContents[buyer].push(contentId);
+
+        emit OwnershipApproved(contentId, prev, buyer, block.timestamp);
+        emit ContentTransferred(contentId, prev, buyer, block.timestamp);
+    }
+
+    // Reject transfer request (owner rejects)
+    function rejectTransfer(string memory contentId) public {
+        require(cidExists[contentId], "Content not registered");
+        Content storage c = contents[contentId];
+        require(msg.sender == c.owner, "Only owner can reject");
+        TransferRequest storage req = transferRequests[contentId];
+        require(req.isPending, "No pending request");
+
+        address requester = req.requester;
+        req.isPending = false;
+
+        emit OwnershipRejected(contentId, msg.sender, requester, block.timestamp);
+    }
+
+    // Get pending transfer request for a content
+    function getTransferRequest(string memory contentId) public view returns (TransferRequest memory) {
+        return transferRequests[contentId];
     }
 }
