@@ -99,7 +99,17 @@ function RegisterContent({ account, isIpfsConnected, isContractConnected, onSucc
           return;
         } else {
           // Different user trying to register someone else's content
-          // Show error immediately WITHOUT any transaction
+          // Log the duplicate attempt to blockchain FIRST
+          try {
+            console.log('Logging duplicate registration attempt...');
+            const logTx = await contract.logDuplicateAttempt(cid);
+            await logTx.wait();
+            console.log('Duplicate attempt logged successfully');
+          } catch (logErr) {
+            console.error('Failed to log duplicate attempt:', logErr);
+          }
+          
+          // Show error immediately WITHOUT proceeding with registration
           setTxStatus('failed');
           setError(`This content is already registered by another user (${owner.substring(0, 10)}...)`);
           setUploadStatus('');

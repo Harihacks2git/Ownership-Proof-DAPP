@@ -57,18 +57,39 @@ function MyContents({ account, isContractConnected, refreshTrigger }) {
               timestamp: Number(data.timestamp)
             });
 
-            // Check for pending transfer requests
+            // Check for pending transfer requests from all requesters
             try {
-              const request = await contract.getTransferRequest(cid);
-              if (request.isPending) {
-                requests[cid] = {
-                  requester: request.requester,
-                  price: Number(request.price),
-                  timestamp: Number(request.timestamp)
-                };
+              // Query all OwnershipRequested events for this content
+              const requestFilter = contract.filters.OwnershipRequested(cid);
+              const requestEvents = await contract.queryFilter(requestFilter, 0, 'latest');
+              
+              // Check each unique requester
+              const seenRequesters = new Set();
+              const pendingRequestsList = [];
+              
+              for (const event of requestEvents) {
+                const requesterAddr = event.args.requester;
+                
+                if (seenRequesters.has(requesterAddr)) continue;
+                seenRequesters.add(requesterAddr);
+                
+                // Check if this requester's request is still pending
+                const request = await contract.getTransferRequest(cid, requesterAddr);
+                if (request.isPending) {
+                  pendingRequestsList.push({
+                    requester: request.requester,
+                    price: Number(request.price),
+                    timestamp: Number(request.timestamp)
+                  });
+                }
+              }
+              
+              // Store all pending requests for this content
+              if (pendingRequestsList.length > 0) {
+                requests[cid] = pendingRequestsList;
               }
             } catch (err) {
-              console.log(`Could not load request for ${cid}`);
+              console.log(`Could not load requests for ${cid}:`, err.message);
             }
           }
         } catch (err) {
@@ -106,37 +127,53 @@ function MyContents({ account, isContractConnected, refreshTrigger }) {
     }
   };
 
-  const handleApproveTransfer = async (cid) => {
+  const handleApproveTransfer = async (cid, requester) => {
     try {
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
       const contract = new ethers.Contract(contractAddress, contractABI.abi, signer);
 
-      const tx = await contract.approveTransfer(cid);
+      // Get the correct nonce from the network
+      const signerAddress = await signer.getAddress();
+      const nonce = await provider.getTransactionCount(signerAddress, 'latest');
+
+      const tx = await contract.approveTransfer(cid, requester, { nonce });
       await tx.wait();
       
       // Reload contents
       loadContents();
     } catch (err) {
       console.error('Approve error:', err);
-      setError('Failed to approve transfer: ' + (err.shortMessage || err.message));
+      if (err.message?.includes('nonce') || err.message?.includes('Nonce')) {
+        setError('Transaction nonce error. Please reset your MetaMask account: Settings > Advanced > Clear activity tab data');
+      } else {
+        setError('Failed to approve transfer: ' + (err.reason || err.shortMessage || err.message));
+      }
     }
   };
 
-  const handleRejectTransfer = async (cid) => {
+  const handleRejectTransfer = async (cid, requester) => {
     try {
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
       const contract = new ethers.Contract(contractAddress, contractABI.abi, signer);
 
-      const tx = await contract.rejectTransfer(cid);
+      // Get the correct nonce from the network
+      const signerAddress = await signer.getAddress();
+      const nonce = await provider.getTransactionCount(signerAddress, 'latest');
+
+      const tx = await contract.rejectTransfer(cid, requester, { nonce });
       await tx.wait();
       
       // Reload contents
       loadContents();
     } catch (err) {
       console.error('Reject error:', err);
-      setError('Failed to reject transfer: ' + (err.shortMessage || err.message));
+      if (err.message?.includes('nonce') || err.message?.includes('Nonce')) {
+        setError('Transaction nonce error. Please reset your MetaMask account: Settings > Advanced > Clear activity tab data');
+      } else {
+        setError('Failed to reject transfer: ' + (err.reason || err.shortMessage || err.message));
+      }
     }
   };
 
@@ -231,36 +268,40 @@ function MyContents({ account, isContractConnected, refreshTrigger }) {
 
                 {/* Pending Transfer Request */}
                 {pendingRequests[content.cid] && (
-                  <div className="pending-request">
-                    <div className="request-header">
-                      <span className="request-badge">🔔 Transfer Request</span>
+                  <div className="pending-requests-section">
+                    <div className="requests-header">
+                      <span className="requests-badge">🔔 {pendingRequests[content.cid].length} Transfer Request{pendingRequests[content.cid].length > 1 ? 's' : ''}</span>
                     </div>
-                    <p className="request-info">
-                      From: <code>{formatAddress(pendingRequests[content.cid].requester)}</code>
-                    </p>
-                    <p className="request-info">
-                      Price: {pendingRequests[content.cid].price === 0 ? 'Free' : `₹${pendingRequests[content.cid].price}`}
-                    </p>
-                    <div className="request-actions">
-                      <button 
-                        className="action-btn approve"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleApproveTransfer(content.cid);
-                        }}
-                      >
-                        ✅ Approve
-                      </button>
-                      <button 
-                        className="action-btn reject"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleRejectTransfer(content.cid);
-                        }}
-                      >
-                        ❌ Reject
-                      </button>
-                    </div>
+                    {pendingRequests[content.cid].map((request, idx) => (
+                      <div key={idx} className="pending-request">
+                        <p className="request-info">
+                          From: <code>{formatAddress(request.requester)}</code>
+                        </p>
+                        <p className="request-info">
+                          Price: {request.price === 0 ? 'Free' : `₹${request.price}`}
+                        </p>
+                        <div className="request-actions">
+                          <button 
+                            className="action-btn approve"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleApproveTransfer(content.cid, request.requester);
+                            }}
+                          >
+                            ✅ Approve
+                          </button>
+                          <button 
+                            className="action-btn reject"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRejectTransfer(content.cid, request.requester);
+                            }}
+                          >
+                            ❌ Reject
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
 
@@ -525,26 +566,35 @@ function MyContents({ account, isContractConnected, refreshTrigger }) {
           background: var(--border-color);
         }
 
-        /* Pending Request Styles */
+        /* Pending Requests Styles */
+        .pending-requests-section {
+          margin-bottom: 16px;
+        }
+
+        .requests-header {
+          margin-bottom: 12px;
+        }
+
+        .requests-badge {
+          background: rgba(251, 191, 36, 0.2);
+          color: #f59e0b;
+          padding: 6px 14px;
+          border-radius: 20px;
+          font-size: 13px;
+          font-weight: 600;
+          display: inline-block;
+        }
+
         .pending-request {
           background: rgba(251, 191, 36, 0.1);
           border: 2px solid rgba(251, 191, 36, 0.4);
           border-radius: 10px;
           padding: 14px;
-          margin-bottom: 16px;
-        }
-
-        .request-header {
           margin-bottom: 10px;
         }
 
-        .request-badge {
-          background: rgba(251, 191, 36, 0.2);
-          color: #f59e0b;
-          padding: 5px 12px;
-          border-radius: 20px;
-          font-size: 12px;
-          font-weight: 600;
+        .pending-request:last-child {
+          margin-bottom: 0;
         }
 
         .request-info {

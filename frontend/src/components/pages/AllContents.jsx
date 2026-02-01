@@ -120,10 +120,10 @@ function AllContents({ account, isContractConnected, refreshTrigger }) {
         return;
       }
 
-      // Check if there's already a pending request
-      const existingRequest = await contract.getTransferRequest(cid);
+      // Check if current user already has a pending request
+      const existingRequest = await contract.getTransferRequest(cid, account);
       if (existingRequest.isPending) {
-        setError('A transfer request is already pending for this content');
+        setError('You already have a pending request for this content');
         return;
       }
 
@@ -133,16 +133,21 @@ function AllContents({ account, isContractConnected, refreshTrigger }) {
 
       setRequestingFor(null);
       setRequestPrice('0');
-      alert('Ownership request sent successfully!');
       
-      // Reload contents to update UI
-      loadAllContents();
+      // Update the content status to "Requested" immediately
+      setContents(prevContents => 
+        prevContents.map(c => 
+          c.cid === cid ? { ...c, requestStatus: 'Requested' } : c
+        )
+      );
+      
+      alert('Ownership request sent successfully!');
     } catch (err) {
       console.error('Request error:', err);
       if (err.message?.includes('Owner cannot request own content')) {
         setError('You already own this content');
-      } else if (err.message?.includes('Request already pending')) {
-        setError('A transfer request is already pending for this content');
+      } else if (err.message?.includes('already have a pending request')) {
+        setError('You already have a pending request for this content');
       } else if (err.code === 'ACTION_REJECTED') {
         setError('Transaction rejected by user');
       } else {

@@ -85,20 +85,31 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
         for (const event of requestEvents) {
           const block = await provider.getBlock(event.blockNumber);
           const contentId = event.args.contentId;
+          const requesterAddr = event.args.requester;
           
-          // Get transfer request status
+          // Get transfer request status for this specific requester
           let status = 'Pending';
+          let statusDetails = 'Pending';
+          
           try {
-            const transferReq = await contract.getTransferRequest(contentId);
+            const transferReq = await contract.getTransferRequest(contentId, requesterAddr);
+            
             if (!transferReq.isPending) {
-              // Check if it was approved (look for ContentTransferred event) or rejected
+              // Check if it was approved (look for ContentTransferred event to this requester) or rejected
               const transferredFilter = contract.filters.ContentTransferred(contentId);
               const transferredEvents = await contract.queryFilter(transferredFilter, event.blockNumber, 'latest');
               
-              if (transferredEvents.length > 0) {
+              // Check if transfer was to this specific requester
+              const transferToRequester = transferredEvents.find(te => 
+                te.args.to.toLowerCase() === requesterAddr.toLowerCase() && te.blockNumber > event.blockNumber
+              );
+              
+              if (transferToRequester) {
                 status = 'Approved';
+                statusDetails = 'Approved';
               } else {
                 status = 'Rejected';
+                statusDetails = 'Rejected';
               }
             }
           } catch (err) {
@@ -110,10 +121,10 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
             txHash: event.transactionHash,
             blockNumber: event.blockNumber,
             timestamp: block ? block.timestamp : 0,
-            actor: event.args.requester,
+            actor: requesterAddr,
             contentId: contentId,
             status: status,
-            details: `Ownership requested by ${event.args.requester?.substring(0, 10)}... (${status})`
+            details: `Ownership requested by ${requesterAddr?.substring(0, 10)}... - ${statusDetails}`
           });
         }
       } catch (err) {

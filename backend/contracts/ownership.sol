@@ -25,7 +25,7 @@ contract ContentRegistry {
     mapping(string => bool) private cidExists;
     mapping(string => Content) private contents; // keyed by contentID / CID or some ID
     mapping(address => string[]) private userContents;
-    mapping(string => TransferRequest) private transferRequests; // contentId => pending request
+    mapping(string => mapping(address => TransferRequest)) private transferRequests; // contentId => requester => request
 
     event ContentRegistered(string indexed contentId, address indexed owner, uint256 timestamp);
     event ContentTransferred(string indexed contentId, address indexed from, address indexed to, uint256 timestamp);
@@ -59,12 +59,8 @@ contract ContentRegistry {
 
     // Registration by owner (owner signs with their wallet off-chain - here we use msg.sender)
     function registerContent(string memory contentId, string memory title, string memory description, string memory contentType) public {
-        // If content already exists, emit duplicate attempt event before reverting
-        if (cidExists[contentId]) {
-            Content storage existing = contents[contentId];
-            emit DuplicateRegistrationAttempt(contentId, msg.sender, existing.owner, block.timestamp);
-            revert("content already registered");
-        }
+        // If content already exists, just revert (frontend will call logDuplicateAttempt separately)
+        require(!cidExists[contentId], "content already registered");
         
         Content storage c = contents[contentId];
         c.cid = contentId;
@@ -134,9 +130,12 @@ contract ContentRegistry {
         require(cidExists[contentId], "Content not registered");
         Content storage c = contents[contentId];
         require(msg.sender != c.owner, "Owner cannot request own content");
-        require(!transferRequests[contentId].isPending, "Request already pending");
+        
+        // Allow multiple requests - each user can have one pending request
+        TransferRequest storage existingReq = transferRequests[contentId][msg.sender];
+        require(!existingReq.isPending, "You already have a pending request for this content");
 
-        transferRequests[contentId] = TransferRequest({
+        transferRequests[contentId][msg.sender] = TransferRequest({
             requester: msg.sender,
             price: price,
             isPending: true,
@@ -147,12 +146,12 @@ contract ContentRegistry {
     }
 
     // Approve transfer request (owner approves)
-    function approveTransfer(string memory contentId) public {
+    function approveTransfer(string memory contentId, address requester) public {
         require(cidExists[contentId], "Content not registered");
         Content storage c = contents[contentId];
         require(msg.sender == c.owner, "Only owner can approve");
-        TransferRequest storage req = transferRequests[contentId];
-        require(req.isPending, "No pending request");
+        TransferRequest storage req = transferRequests[contentId][requester];
+        require(req.isPending, "No pending request from this user");
 
         address buyer = req.requester;
         req.isPending = false;
@@ -166,24 +165,26 @@ contract ContentRegistry {
 
         emit OwnershipApproved(contentId, prev, buyer, block.timestamp);
         emit ContentTransferred(contentId, prev, buyer, block.timestamp);
+        
+        // Note: Other pending requests remain in state but can be cleaned up or ignored
+        // The frontend will handle showing them as rejected when ownership changes
     }
 
     // Reject transfer request (owner rejects)
-    function rejectTransfer(string memory contentId) public {
+    function rejectTransfer(string memory contentId, address requester) public {
         require(cidExists[contentId], "Content not registered");
         Content storage c = contents[contentId];
         require(msg.sender == c.owner, "Only owner can reject");
-        TransferRequest storage req = transferRequests[contentId];
-        require(req.isPending, "No pending request");
+        TransferRequest storage req = transferRequests[contentId][requester];
+        require(req.isPending, "No pending request from this user");
 
-        address requester = req.requester;
         req.isPending = false;
 
         emit OwnershipRejected(contentId, msg.sender, requester, block.timestamp);
     }
 
-    // Get pending transfer request for a content
-    function getTransferRequest(string memory contentId) public view returns (TransferRequest memory) {
-        return transferRequests[contentId];
+    // Get pending transfer request for a content from specific requester
+    function getTransferRequest(string memory contentId, address requester) public view returns (TransferRequest memory) {
+        return transferRequests[contentId][requester];
     }
 }
