@@ -9,8 +9,8 @@ export const IPFS_CONFIG = {
   // IPFS Gateway URL (for viewing content)
   gatewayUrl: import.meta.env.VITE_IPFS_GATEWAY_URL || 'http://127.0.0.1:8080/ipfs',
   // IPFS client host and port
-  host: import.meta.env.VITE_IPFS_HOST || 'localhost',
-  port: import.meta.env.VITE_IPFS_PORT || '5001',
+  host: import.meta.env.VITE_IPFS_HOST || '127.0.0.1',
+  port: import.meta.env.VITE_IPFS_PORT || 5001,
   protocol: import.meta.env.VITE_IPFS_PROTOCOL || 'http'
 };
 

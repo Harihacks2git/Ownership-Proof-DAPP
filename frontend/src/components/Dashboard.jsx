@@ -48,9 +48,18 @@ function Dashboard({ account, onDisconnect }) {
   const checkConnections = async () => {
     // Check IPFS
     try {
-      await axios.post(`${IPFS_CONFIG.apiUrl}/id`, {}, { timeout: 3000 });
-      setIsIpfsConnected(true);
-    } catch {
+      const response = await fetch('http://127.0.0.1:5001/api/v0/id', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      if (response.ok) {
+        setIsIpfsConnected(true);
+      } else {
+        setIsIpfsConnected(false);
+      }
+    } catch (err) {
       setIsIpfsConnected(false);
       console.log('IPFS not connected - start your local IPFS daemon');
     }
