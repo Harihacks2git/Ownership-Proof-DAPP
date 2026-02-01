@@ -8,19 +8,20 @@ const contractAddress = CONTRACT_CONFIG.address;
 /**
  * TransactionHistory Page Component
  * 
- * Displays a timeline/table of all blockchain events:
+ * Displays a timeline/table of ALL blockchain events network-wide:
  * - Content registrations
  * - Ownership transfers
+ * - Ownership requests
  * Shows: Action type, Transaction Hash, Timestamp, Actor
  */
 function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [filter, setFilter] = useState('all'); // 'all', 'registered', 'sent', 'received'
+  const [filter, setFilter] = useState('all'); // 'all', 'registered', 'transferred', 'requested'
 
   const loadHistory = useCallback(async () => {
-    if (!account || !isContractConnected) {
+    if (!isContractConnected) {
       setLoading(false);
       return;
     }
@@ -34,9 +35,9 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
 
       const allEvents = [];
 
-      // Query ContentRegistered events (where user is owner)
+      // Query ALL ContentRegistered events (network-wide)
       try {
-        const registeredFilter = contract.filters.ContentRegistered(null, account);
+        const registeredFilter = contract.filters.ContentRegistered();
         const registeredEvents = await contract.queryFilter(registeredFilter, 0, 'latest');
         
         for (const event of registeredEvents) {
@@ -46,53 +47,76 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
             txHash: event.transactionHash,
             blockNumber: event.blockNumber,
             timestamp: block ? block.timestamp : 0,
-            actor: account,
-            details: 'Content registered'
+            actor: event.args.owner,
+            details: `Content registered by ${event.args.owner?.substring(0, 10)}...`
           });
         }
       } catch (err) {
         console.log('Could not load registration events:', err.message);
       }
 
-      // Query ContentTransferred events where user sent
+      // Query ALL ContentTransferred events (network-wide)
       try {
-        const sentFilter = contract.filters.ContentTransferred(null, account);
-        const sentEvents = await contract.queryFilter(sentFilter, 0, 'latest');
+        const transferFilter = contract.filters.ContentTransferred();
+        const transferEvents = await contract.queryFilter(transferFilter, 0, 'latest');
         
-        for (const event of sentEvents) {
+        for (const event of transferEvents) {
           const block = await provider.getBlock(event.blockNumber);
           allEvents.push({
-            type: 'Sent',
-            txHash: event.transactionHash,
-            blockNumber: event.blockNumber,
-            timestamp: block ? block.timestamp : 0,
-            actor: account,
-            to: event.args.to,
-            details: `Transferred to ${event.args.to?.substring(0, 10)}...`
-          });
-        }
-      } catch (err) {
-        console.log('Could not load sent events:', err.message);
-      }
-
-      // Query ContentTransferred events where user received
-      try {
-        const receivedFilter = contract.filters.ContentTransferred(null, null, account);
-        const receivedEvents = await contract.queryFilter(receivedFilter, 0, 'latest');
-        
-        for (const event of receivedEvents) {
-          const block = await provider.getBlock(event.blockNumber);
-          allEvents.push({
-            type: 'Received',
+            type: 'Transferred',
             txHash: event.transactionHash,
             blockNumber: event.blockNumber,
             timestamp: block ? block.timestamp : 0,
             actor: event.args.from,
-            details: `Received from ${event.args.from?.substring(0, 10)}...`
+            from: event.args.from,
+            to: event.args.to,
+            details: `Transferred from ${event.args.from?.substring(0, 10)}... to ${event.args.to?.substring(0, 10)}...`
           });
         }
       } catch (err) {
-        console.log('Could not load received events:', err.message);
+        console.log('Could not load transfer events:', err.message);
+      }
+
+      // Query ALL OwnershipRequested events (network-wide)
+      try {
+        const requestFilter = contract.filters.OwnershipRequested();
+        const requestEvents = await contract.queryFilter(requestFilter, 0, 'latest');
+        
+        for (const event of requestEvents) {
+          const block = await provider.getBlock(event.blockNumber);
+          allEvents.push({
+            type: 'Requested',
+            txHash: event.transactionHash,
+            blockNumber: event.blockNumber,
+            timestamp: block ? block.timestamp : 0,
+            actor: event.args.requester,
+            details: `Ownership requested by ${event.args.requester?.substring(0, 10)}...`
+          });
+        }
+      } catch (err) {
+        console.log('Could not load request events:', err.message);
+      }
+
+      // Query ALL DuplicateRegistrationAttempt events (network-wide)
+      try {
+        const duplicateFilter = contract.filters.DuplicateRegistrationAttempt();
+        const duplicateEvents = await contract.queryFilter(duplicateFilter, 0, 'latest');
+        
+        for (const event of duplicateEvents) {
+          const block = await provider.getBlock(event.blockNumber);
+          allEvents.push({
+            type: 'Duplicate Attempt',
+            txHash: event.transactionHash,
+            blockNumber: event.blockNumber,
+            timestamp: block ? block.timestamp : 0,
+            actor: event.args.attempter,
+            owner: event.args.currentOwner,
+            contentId: event.args.contentId,
+            details: `${event.args.attempter?.substring(0, 10)}... tried to register content owned by ${event.args.currentOwner?.substring(0, 10)}...`
+          });
+        }
+      } catch (err) {
+        console.log('Could not load duplicate attempt events:', err.message);
       }
 
       // Sort by timestamp (newest first)
@@ -104,7 +128,7 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
     } finally {
       setLoading(false);
     }
-  }, [account, isContractConnected]);
+  }, [isContractConnected]);
 
   useEffect(() => {
     loadHistory();
@@ -129,8 +153,9 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
   const getTypeColor = (type) => {
     switch(type) {
       case 'Registered': return 'registered';
-      case 'Sent': return 'sent';
-      case 'Received': return 'received';
+      case 'Transferred': return 'transferred';
+      case 'Requested': return 'requested';
+      case 'Duplicate Attempt': return 'duplicate';
       default: return '';
     }
   };
@@ -138,8 +163,9 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
   const getTypeIcon = (type) => {
     switch(type) {
       case 'Registered': return '📝';
-      case 'Sent': return '📤';
-      case 'Received': return '📥';
+      case 'Transferred': return '🔄';
+      case 'Requested': return '📤';
+      case 'Duplicate Attempt': return '🚨';
       default: return '📋';
     }
   };
@@ -148,8 +174,8 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
     <div className="history-page">
       <div className="page-header">
         <div className="header-text">
-          <h1>📜 Transaction History</h1>
-          <p>Complete audit trail of your ownership activities</p>
+          <h1>📜 Network Transaction History</h1>
+          <p>Complete audit trail of all ownership activities on the network</p>
         </div>
         <button onClick={loadHistory} className="refresh-btn" disabled={loading}>
           🔄 Refresh
@@ -171,16 +197,22 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
           📝 Registered ({transactions.filter(t => t.type === 'Registered').length})
         </button>
         <button 
-          className={`filter-tab ${filter === 'sent' ? 'active' : ''}`}
-          onClick={() => setFilter('sent')}
+          className={`filter-tab ${filter === 'transferred' ? 'active' : ''}`}
+          onClick={() => setFilter('transferred')}
         >
-          📤 Sent ({transactions.filter(t => t.type === 'Sent').length})
+          🔄 Transferred ({transactions.filter(t => t.type === 'Transferred').length})
         </button>
         <button 
-          className={`filter-tab ${filter === 'received' ? 'active' : ''}`}
-          onClick={() => setFilter('received')}
+          className={`filter-tab ${filter === 'requested' ? 'active' : ''}`}
+          onClick={() => setFilter('requested')}
         >
-          📥 Received ({transactions.filter(t => t.type === 'Received').length})
+          📤 Requested ({transactions.filter(t => t.type === 'Requested').length})
+        </button>
+        <button 
+          className={`filter-tab ${filter === 'duplicate attempt' ? 'active' : ''}`}
+          onClick={() => setFilter('duplicate attempt')}
+        >
+          🚨 Duplicate Attempts ({transactions.filter(t => t.type === 'Duplicate Attempt').length})
         </button>
       </div>
 
@@ -444,14 +476,19 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
           background: var(--success-bg);
         }
 
-        .timeline-item.sent .timeline-marker {
-          border-color: var(--error-text);
-          background: var(--error-bg);
-        }
-
-        .timeline-item.received .timeline-marker {
+        .timeline-item.transferred .timeline-marker {
           border-color: #60a5fa;
           background: rgba(59, 130, 246, 0.2);
+        }
+
+        .timeline-item.requested .timeline-marker {
+          border-color: #f59e0b;
+          background: rgba(251, 191, 36, 0.2);
+        }
+
+        .timeline-item.duplicate .timeline-marker {
+          border-color: #ef4444;
+          background: rgba(239, 68, 68, 0.2);
         }
 
         .marker-icon {
@@ -485,14 +522,19 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
           color: var(--success-text);
         }
 
-        .type-badge.sent {
-          background: var(--error-bg);
-          color: var(--error-text);
-        }
-
-        .type-badge.received {
+        .type-badge.transferred {
           background: rgba(59, 130, 246, 0.2);
           color: #60a5fa;
+        }
+
+        .type-badge.requested {
+          background: rgba(251, 191, 36, 0.2);
+          color: #f59e0b;
+        }
+
+        .type-badge.duplicate {
+          background: rgba(239, 68, 68, 0.2);
+          color: #ef4444;
         }
 
         .timeline-time {
@@ -546,11 +588,13 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
           background: var(--bg-secondary);
           border: 1px solid var(--border-color);
           border-radius: 16px;
-          overflow: hidden;
+          overflow-x: auto;
+          width: 100%;
         }
 
         .history-table {
           width: 100%;
+          min-width: 900px;
           border-collapse: collapse;
         }
 
@@ -577,10 +621,10 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
         }
 
         .details-cell {
-          max-width: 200px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
+          min-width: 300px;
+          max-width: 500px;
+          word-wrap: break-word;
+          white-space: normal;
         }
 
         .tx-hash {
@@ -591,6 +635,7 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
           border: 1px solid var(--border-color);
           cursor: pointer;
           transition: all 0.2s;
+          white-space: nowrap;
         }
 
         .tx-hash:hover {
@@ -600,6 +645,7 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
 
         .time-cell {
           white-space: nowrap;
+          min-width: 180px;
         }
 
         @media (max-width: 768px) {

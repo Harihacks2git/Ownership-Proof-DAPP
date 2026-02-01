@@ -74,14 +74,43 @@ function RegisterContent({ account, isIpfsConnected, isContractConnected, onSucc
       const cid = result.path;
       setUploadStatus(`✅ Uploaded to IPFS! CID: ${cid}`);
 
-      // Step 2: Register on blockchain
-      setUploadStatus('🔐 Waiting for wallet confirmation...');
-      setTxStatus('pending');
+      // Step 2: Check if content exists (NO WALLET CONFIRMATION)
+      setUploadStatus('🔍 Checking if content already exists...');
       
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
       const contract = new ethers.Contract(contractAddress, contractABI.abi, signer);
+      const currentAccount = await signer.getAddress();
 
+      // Check if content already exists (read-only, instant, no gas)
+      const exists = await contract.checkContentExists(cid);
+      
+      if (exists) {
+        // Content exists - get the owner to check if it's the same user
+        const content = await contract.getContent(cid);
+        const owner = content.owner;
+        
+        if (owner.toLowerCase() === currentAccount.toLowerCase()) {
+          // Same user trying to register their own content again
+          setTxStatus('failed');
+          setError('You have already registered this content');
+          setUploadStatus('');
+          setIsUploading(false);
+          return;
+        } else {
+          // Different user trying to register someone else's content
+          // Show error immediately WITHOUT any transaction
+          setTxStatus('failed');
+          setError(`This content is already registered by another user (${owner.substring(0, 10)}...)`);
+          setUploadStatus('');
+          setIsUploading(false);
+          return;
+        }
+      }
+
+      // Content doesn't exist, proceed with registration
+      setUploadStatus('🔐 Waiting for wallet confirmation...');
+      setTxStatus('pending');
       const tx = await contract.registerContent(cid, title.trim(), description.trim() || '', contentType);
       setUploadStatus(`⏳ Transaction submitted. Waiting for confirmation...`);
 

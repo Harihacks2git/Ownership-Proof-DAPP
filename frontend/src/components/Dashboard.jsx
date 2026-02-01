@@ -9,6 +9,8 @@ import Sidebar from './Sidebar';
 import RegisterContent from './pages/RegisterContent';
 import MyContents from './pages/MyContents';
 import TransactionHistory from './pages/TransactionHistory';
+import AllContents from './pages/AllContents';
+import Alerts from './pages/Alerts';
 
 const contractAddress = CONTRACT_CONFIG.address;
 
@@ -26,7 +28,7 @@ const contractAddress = CONTRACT_CONFIG.address;
  */
 function Dashboard({ account, onDisconnect }) {
   // Current active page
-  const [activePage, setActivePage] = useState('register');
+  const [activePage, setActivePage] = useState('all');
   
   // Connection status
   const [isIpfsConnected, setIsIpfsConnected] = useState(false);
@@ -83,6 +85,14 @@ function Dashboard({ account, onDisconnect }) {
   // Render the active page
   const renderPage = () => {
     switch (activePage) {
+      case 'all':
+        return (
+          <AllContents 
+            account={account}
+            isContractConnected={isContractConnected}
+            refreshTrigger={refreshTrigger}
+          />
+        );
       case 'register':
         return (
           <RegisterContent 
@@ -108,13 +118,20 @@ function Dashboard({ account, onDisconnect }) {
             refreshTrigger={refreshTrigger}
           />
         );
+      case 'alerts':
+        return (
+          <Alerts 
+            account={account}
+            isContractConnected={isContractConnected}
+            refreshTrigger={refreshTrigger}
+          />
+        );
       default:
         return (
-          <RegisterContent 
+          <AllContents 
             account={account}
-            isIpfsConnected={isIpfsConnected}
             isContractConnected={isContractConnected}
-            onSuccess={handleRegistrationSuccess}
+            refreshTrigger={refreshTrigger}
           />
         );
     }

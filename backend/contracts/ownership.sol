@@ -33,6 +33,7 @@ contract ContentRegistry {
     event OwnershipRequested(string indexed contentId, address indexed requester, uint256 price, uint256 timestamp);
     event OwnershipApproved(string indexed contentId, address indexed owner, address indexed buyer, uint256 timestamp);
     event OwnershipRejected(string indexed contentId, address indexed owner, address indexed requester, uint256 timestamp);
+    event DuplicateRegistrationAttempt(string indexed contentId, address indexed attempter, address indexed currentOwner, uint256 timestamp);
 
     modifier onlyAuthority() {
         require(msg.sender == authority, "only authority can call");
@@ -44,9 +45,27 @@ contract ContentRegistry {
         authority = _authority;
     }
 
+    // Check if content exists (read-only, no gas required)
+    function checkContentExists(string memory contentId) public view returns (bool) {
+        return cidExists[contentId];
+    }
+    
+    // Log duplicate attempt (separate transaction, called only when needed)
+    function logDuplicateAttempt(string memory contentId) public {
+        require(cidExists[contentId], "Content doesn't exist");
+        Content storage existing = contents[contentId];
+        emit DuplicateRegistrationAttempt(contentId, msg.sender, existing.owner, block.timestamp);
+    }
+
     // Registration by owner (owner signs with their wallet off-chain - here we use msg.sender)
     function registerContent(string memory contentId, string memory title, string memory description, string memory contentType) public {
-        require(!cidExists[contentId], "content already registered");
+        // If content already exists, emit duplicate attempt event before reverting
+        if (cidExists[contentId]) {
+            Content storage existing = contents[contentId];
+            emit DuplicateRegistrationAttempt(contentId, msg.sender, existing.owner, block.timestamp);
+            revert("content already registered");
+        }
+        
         Content storage c = contents[contentId];
         c.cid = contentId;
         c.title = title;
