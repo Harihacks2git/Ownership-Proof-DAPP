@@ -120,27 +120,7 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
         console.log('Could not load request events:', err.message);
       }
 
-      // Query ALL OwnershipRejected events (network-wide)
-      try {
-        const rejectedFilter = contract.filters.OwnershipRejected();
-        const rejectedEvents = await contract.queryFilter(rejectedFilter, 0, 'latest');
-        
-        for (const event of rejectedEvents) {
-          const block = await provider.getBlock(event.blockNumber);
-          allEvents.push({
-            type: 'Rejected',
-            txHash: event.transactionHash,
-            blockNumber: event.blockNumber,
-            timestamp: block ? block.timestamp : 0,
-            actor: event.args.owner,
-            requester: event.args.requester,
-            contentId: event.args.contentId,
-            details: `${event.args.owner?.substring(0, 10)}... rejected request from ${event.args.requester?.substring(0, 10)}...`
-          });
-        }
-      } catch (err) {
-        console.log('Could not load rejection events:', err.message);
-      }
+
 
       // Query ALL DuplicateRegistrationAttempt events (network-wide)
       try {
@@ -200,7 +180,6 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
       case 'Registered': return 'registered';
       case 'Transferred': return 'transferred';
       case 'Requested': return 'requested';
-      case 'Rejected': return 'rejected';
       case 'Duplicate Attempt': return 'duplicate';
       default: return '';
     }
@@ -211,7 +190,6 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
       case 'Registered': return '📝';
       case 'Transferred': return '🔄';
       case 'Requested': return '📤';
-      case 'Rejected': return '❌';
       case 'Duplicate Attempt': return '🚨';
       default: return '📋';
     }
@@ -282,12 +260,6 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
           onClick={() => setFilter('requested')}
         >
           📤 Requested ({transactions.filter(t => t.type === 'Requested').length})
-        </button>
-        <button 
-          className={`filter-tab ${filter === 'rejected' ? 'active' : ''}`}
-          onClick={() => setFilter('rejected')}
-        >
-          ❌ Rejected ({transactions.filter(t => t.type === 'Rejected').length})
         </button>
         <button 
           className={`filter-tab ${filter === 'duplicate attempt' ? 'active' : ''}`}
@@ -369,7 +341,7 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
                   <tr>
                     <th>Action</th>
                     <th>Details</th>
-                    <th>Status</th>
+                    {filter === 'requested' && <th>Status</th>}
                     <th>Tx Hash</th>
                     <th>Block</th>
                     <th>Time</th>
@@ -384,9 +356,11 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
                         </span>
                       </td>
                       <td className="details-cell">{tx.details}</td>
-                      <td>
-                        {tx.status ? getStatusBadge(tx.status) : '-'}
-                      </td>
+                      {filter === 'requested' && (
+                        <td>
+                          {tx.status ? getStatusBadge(tx.status) : '-'}
+                        </td>
+                      )}
                       <td>
                         <code 
                           className="tx-hash clickable"
@@ -572,11 +546,6 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
           background: rgba(251, 191, 36, 0.2);
         }
 
-        .timeline-item.rejected .timeline-marker {
-          border-color: #ef4444;
-          background: rgba(239, 68, 68, 0.2);
-        }
-
         .timeline-item.duplicate .timeline-marker {
           border-color: #ef4444;
           background: rgba(239, 68, 68, 0.2);
@@ -621,11 +590,6 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
         .type-badge.requested {
           background: rgba(251, 191, 36, 0.2);
           color: #f59e0b;
-        }
-
-        .type-badge.rejected {
-          background: rgba(239, 68, 68, 0.2);
-          color: #ef4444;
         }
 
         .type-badge.duplicate {

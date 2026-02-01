@@ -26,7 +26,7 @@ function Sidebar({
     { id: 'all', label: 'All Contents', icon: '🌐', description: 'Browse all registered content' },
     { id: 'register', label: 'Register Content', icon: '📤', description: 'Upload & register new content' },
     { id: 'contents', label: 'My Contents', icon: '📁', description: 'View your owned contents' },
-    { id: 'alerts', label: 'Alerts', icon: '🚨', description: 'Security & duplicate alerts' },
+    { id: 'alerts', label: 'Alerts', icon: '🔔', description: 'Pending transfer requests' },
     { id: 'history', label: 'Transaction History', icon: '📜', description: 'View activity log' },
   ];
 

@@ -8,8 +8,9 @@ const contractAddress = CONTRACT_CONFIG.address;
 /**
  * Alerts Page Component
  * 
- * Shows duplicate registration attempts for content owned by the current user.
- * When someone tries to register content that already exists, the owner gets notified.
+ * Shows pending transfer requests for content owned by the current user.
+ * When someone requests ownership of your content, you get notified here.
+ * Once approved or rejected, the alert is removed.
  */
 function Alerts({ account, isContractConnected, refreshTrigger }) {
   const [alerts, setAlerts] = useState([]);
@@ -37,27 +38,33 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
 
       const alertsList = [];
 
-      // For each owned content, check for duplicate registration attempts
+      // For each owned content, check for pending transfer requests
       for (const cid of userCids) {
         try {
-          // Query DuplicateRegistrationAttempt events for this CID
-          // The event signature: DuplicateRegistrationAttempt(string indexed contentId, address indexed attempter, address indexed currentOwner, uint256 timestamp)
-          const filter = contract.filters.DuplicateRegistrationAttempt(cid);
-          const events = await contract.queryFilter(filter, 0, 'latest');
-
-          console.log(`Found ${events.length} duplicate attempts for CID:`, cid);
-
-          for (const event of events) {
-            const block = await provider.getBlock(event.blockNumber);
+          // Get transfer request for this content
+          const transferReq = await contract.getTransferRequest(cid);
+          
+          // Only show if there's a PENDING request
+          if (transferReq.isPending && transferReq.requester !== ethers.ZeroAddress) {
             const content = await contract.getContent(cid);
+            
+            // Get the request event to find when it was created
+            const requestFilter = contract.filters.OwnershipRequested(cid);
+            const requestEvents = await contract.queryFilter(requestFilter, 0, 'latest');
+            
+            // Get the most recent request event
+            const latestRequest = requestEvents[requestEvents.length - 1];
+            const block = latestRequest ? await provider.getBlock(latestRequest.blockNumber) : null;
 
             alertsList.push({
               cid: cid,
               contentTitle: content.title || 'Untitled',
-              attempter: event.args.attempter,
-              timestamp: block ? block.timestamp : 0,
-              txHash: event.transactionHash,
-              blockNumber: event.blockNumber
+              contentType: content.contentType || 'Document',
+              requester: transferReq.requester,
+              price: transferReq.price,
+              timestamp: block ? block.timestamp : transferReq.timestamp,
+              txHash: latestRequest ? latestRequest.transactionHash : '',
+              blockNumber: latestRequest ? latestRequest.blockNumber : 0
             });
           }
         } catch (err) {
@@ -67,7 +74,7 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
 
       // Sort by timestamp (newest first)
       alertsList.sort((a, b) => b.timestamp - a.timestamp);
-      console.log('Total alerts:', alertsList.length);
+      console.log('Total pending requests:', alertsList.length);
       setAlerts(alertsList);
     } catch (err) {
       console.error('Error loading alerts:', err);
@@ -96,12 +103,51 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
     return `${hash.substring(0, 10)}...${hash.substring(hash.length - 8)}`;
   };
 
+  const formatPrice = (price) => {
+    if (!price) return '₹0';
+    return `₹${price.toString()}`;
+  };
+
+  const handleApprove = async (cid) => {
+    try {
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const contract = new ethers.Contract(contractAddress, contractABI.abi, signer);
+
+      const tx = await contract.approveTransfer(cid);
+      await tx.wait();
+      
+      // Reload alerts after approval
+      loadAlerts();
+    } catch (err) {
+      console.error('Error approving transfer:', err);
+      setError('Failed to approve transfer: ' + (err.shortMessage || err.message));
+    }
+  };
+
+  const handleReject = async (cid) => {
+    try {
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const contract = new ethers.Contract(contractAddress, contractABI.abi, signer);
+
+      const tx = await contract.rejectTransfer(cid);
+      await tx.wait();
+      
+      // Reload alerts after rejection
+      loadAlerts();
+    } catch (err) {
+      console.error('Error rejecting transfer:', err);
+      setError('Failed to reject transfer: ' + (err.shortMessage || err.message));
+    }
+  };
+
   return (
     <div className="alerts-page">
       <div className="page-header">
         <div className="header-text">
-          <h1>🚨 Security Alerts</h1>
-          <p>Duplicate registration attempts on your digital content</p>
+          <h1>🔔 Transfer Requests</h1>
+          <p>Pending ownership transfer requests for your digital content</p>
         </div>
         <button onClick={loadAlerts} className="refresh-btn" disabled={loading}>
           🔄 Refresh
@@ -112,15 +158,15 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
       <div className="stats-bar">
         <div className="stat-item alert">
           <span className="stat-value">{alerts.length}</span>
-          <span className="stat-label">Total Alerts</span>
+          <span className="stat-label">Pending Requests</span>
         </div>
         <div className="stat-item">
           <span className="stat-value">{new Set(alerts.map(a => a.cid)).size}</span>
-          <span className="stat-label">Affected Contents</span>
+          <span className="stat-label">Contents Requested</span>
         </div>
         <div className="stat-item">
-          <span className="stat-value">{new Set(alerts.map(a => a.attempter)).size}</span>
-          <span className="stat-label">Unique Attempters</span>
+          <span className="stat-value">{new Set(alerts.map(a => a.requester)).size}</span>
+          <span className="stat-label">Unique Requesters</span>
         </div>
       </div>
 
@@ -153,67 +199,83 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
         ) : alerts.length === 0 ? (
           <div className="empty-state success">
             <div className="empty-icon">✅</div>
-            <h3>No Security Alerts</h3>
-            <p>Great! No one has attempted to register your content fraudulently.</p>
+            <h3>No Pending Requests</h3>
+            <p>You don't have any pending ownership transfer requests at the moment.</p>
           </div>
         ) : (
           <div className="alerts-list">
             {alerts.map((alert, idx) => (
               <div key={idx} className="alert-card">
                 <div className="alert-header">
-                  <div className="alert-icon">🚨</div>
+                  <div className="alert-icon">📤</div>
                   <div className="alert-title">
-                    <h3>Duplicate Registration Attempt</h3>
+                    <h3>Ownership Transfer Request</h3>
                     <span className="alert-time">{formatDate(alert.timestamp)}</span>
                   </div>
                 </div>
 
                 <div className="alert-body">
                   <div className="alert-message">
-                    <strong>User {formatAddress(alert.attempter)}</strong> attempted to register 
-                    your digital property <strong>"{alert.contentTitle}"</strong>
+                    <strong>{formatAddress(alert.requester)}</strong> wants to purchase 
+                    your digital property <strong>"{alert.contentTitle}"</strong> for <strong>{formatPrice(alert.price)}</strong>
                   </div>
 
                   <div className="alert-details">
+                    <div className="detail-row">
+                      <span className="detail-label">Content Title:</span>
+                      <span className="detail-value">{alert.contentTitle}</span>
+                    </div>
+                    <div className="detail-row">
+                      <span className="detail-label">Content Type:</span>
+                      <span className="detail-value">{alert.contentType}</span>
+                    </div>
                     <div className="detail-row">
                       <span className="detail-label">Content ID (CID):</span>
                       <code className="detail-value">{alert.cid}</code>
                     </div>
                     <div className="detail-row">
-                      <span className="detail-label">Attempter Address:</span>
-                      <code className="detail-value">{alert.attempter}</code>
+                      <span className="detail-label">Requester Address:</span>
+                      <code className="detail-value">{alert.requester}</code>
                     </div>
                     <div className="detail-row">
-                      <span className="detail-label">Transaction Hash:</span>
-                      <code 
-                        className="detail-value clickable"
-                        onClick={() => navigator.clipboard.writeText(alert.txHash)}
-                        title="Click to copy"
-                      >
-                        {formatTxHash(alert.txHash)}
-                      </code>
+                      <span className="detail-label">Offered Price:</span>
+                      <span className="detail-value price">{formatPrice(alert.price)}</span>
                     </div>
-                    <div className="detail-row">
-                      <span className="detail-label">Block Number:</span>
-                      <span className="detail-value">#{alert.blockNumber}</span>
-                    </div>
+                    {alert.txHash && (
+                      <div className="detail-row">
+                        <span className="detail-label">Transaction Hash:</span>
+                        <code 
+                          className="detail-value clickable"
+                          onClick={() => navigator.clipboard.writeText(alert.txHash)}
+                          title="Click to copy"
+                        >
+                          {formatTxHash(alert.txHash)}
+                        </code>
+                      </div>
+                    )}
                   </div>
 
                   <div className="alert-actions">
+                    <button 
+                      className="action-btn approve"
+                      onClick={() => handleApprove(alert.cid)}
+                    >
+                      ✅ Approve Transfer
+                    </button>
+                    <button 
+                      className="action-btn reject"
+                      onClick={() => handleReject(alert.cid)}
+                    >
+                      ❌ Reject Request
+                    </button>
                     <a 
                       href={`${IPFS_CONFIG.gatewayUrl}/${alert.cid}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="action-btn primary"
-                    >
-                      🔗 View Content on IPFS
-                    </a>
-                    <button 
                       className="action-btn secondary"
-                      onClick={() => navigator.clipboard.writeText(alert.attempter)}
                     >
-                      📋 Copy Attempter Address
-                    </button>
+                      🔗 View on IPFS
+                    </a>
                   </div>
                 </div>
               </div>
@@ -282,8 +344,8 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
         }
 
         .stat-item.alert {
-          background: rgba(239, 68, 68, 0.1);
-          border-color: rgba(239, 68, 68, 0.3);
+          background: rgba(251, 191, 36, 0.1);
+          border-color: rgba(251, 191, 36, 0.3);
         }
 
         .stat-value {
@@ -295,7 +357,7 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
         }
 
         .stat-item.alert .stat-value {
-          color: #ef4444;
+          color: #f59e0b;
         }
 
         .stat-label {
@@ -359,7 +421,7 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
 
         .alert-card {
           background: var(--bg-secondary);
-          border: 2px solid rgba(239, 68, 68, 0.3);
+          border: 2px solid rgba(251, 191, 36, 0.3);
           border-radius: 16px;
           overflow: hidden;
           transition: all 0.2s;
@@ -367,7 +429,7 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
 
         .alert-card:hover {
           transform: translateY(-2px);
-          box-shadow: 0 8px 25px rgba(239, 68, 68, 0.2);
+          box-shadow: 0 8px 25px rgba(251, 191, 36, 0.2);
         }
 
         .alert-header {
@@ -375,8 +437,8 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
           align-items: center;
           gap: 16px;
           padding: 20px 24px;
-          background: rgba(239, 68, 68, 0.1);
-          border-bottom: 1px solid rgba(239, 68, 68, 0.2);
+          background: rgba(251, 191, 36, 0.1);
+          border-bottom: 1px solid rgba(251, 191, 36, 0.2);
         }
 
         .alert-icon {
@@ -386,7 +448,7 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
           display: flex;
           align-items: center;
           justify-content: center;
-          background: rgba(239, 68, 68, 0.2);
+          background: rgba(251, 191, 36, 0.2);
           border-radius: 12px;
         }
 
@@ -411,8 +473,8 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
 
         .alert-message {
           padding: 16px;
-          background: rgba(239, 68, 68, 0.05);
-          border-left: 4px solid #ef4444;
+          background: rgba(251, 191, 36, 0.05);
+          border-left: 4px solid #f59e0b;
           border-radius: 8px;
           margin-bottom: 20px;
           color: var(--text-primary);
@@ -421,7 +483,7 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
         }
 
         .alert-message strong {
-          color: #ef4444;
+          color: #f59e0b;
         }
 
         .alert-details {
@@ -454,6 +516,12 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
           word-break: break-all;
         }
 
+        .detail-value.price {
+          font-size: 18px;
+          font-weight: 700;
+          color: #f59e0b;
+        }
+
         .detail-value.clickable {
           cursor: pointer;
           padding: 4px 8px;
@@ -479,10 +547,12 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
         .alert-actions {
           display: flex;
           gap: 12px;
+          flex-wrap: wrap;
         }
 
         .action-btn {
           flex: 1;
+          min-width: 150px;
           padding: 12px 16px;
           border-radius: 8px;
           font-size: 14px;
@@ -494,13 +564,26 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
           border: none;
         }
 
-        .action-btn.primary {
-          background: var(--accent-color);
+        .action-btn.approve {
+          background: var(--success-bg);
+          color: var(--success-text);
+          border: 1px solid var(--success-text);
+        }
+
+        .action-btn.approve:hover {
+          background: var(--success-text);
           color: white;
         }
 
-        .action-btn.primary:hover {
-          opacity: 0.9;
+        .action-btn.reject {
+          background: var(--error-bg);
+          color: var(--error-text);
+          border: 1px solid var(--error-text);
+        }
+
+        .action-btn.reject:hover {
+          background: var(--error-text);
+          color: white;
         }
 
         .action-btn.secondary {
@@ -529,6 +612,10 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
 
           .alert-actions {
             flex-direction: column;
+          }
+
+          .action-btn {
+            min-width: auto;
           }
 
           .detail-row {
