@@ -84,17 +84,62 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
         
         for (const event of requestEvents) {
           const block = await provider.getBlock(event.blockNumber);
+          const contentId = event.args.contentId;
+          
+          // Get transfer request status
+          let status = 'Pending';
+          try {
+            const transferReq = await contract.getTransferRequest(contentId);
+            if (!transferReq.isPending) {
+              // Check if it was approved (look for ContentTransferred event) or rejected
+              const transferredFilter = contract.filters.ContentTransferred(contentId);
+              const transferredEvents = await contract.queryFilter(transferredFilter, event.blockNumber, 'latest');
+              
+              if (transferredEvents.length > 0) {
+                status = 'Approved';
+              } else {
+                status = 'Rejected';
+              }
+            }
+          } catch (err) {
+            console.log('Could not determine request status:', err.message);
+          }
+          
           allEvents.push({
             type: 'Requested',
             txHash: event.transactionHash,
             blockNumber: event.blockNumber,
             timestamp: block ? block.timestamp : 0,
             actor: event.args.requester,
-            details: `Ownership requested by ${event.args.requester?.substring(0, 10)}...`
+            contentId: contentId,
+            status: status,
+            details: `Ownership requested by ${event.args.requester?.substring(0, 10)}... (${status})`
           });
         }
       } catch (err) {
         console.log('Could not load request events:', err.message);
+      }
+
+      // Query ALL OwnershipRejected events (network-wide)
+      try {
+        const rejectedFilter = contract.filters.OwnershipRejected();
+        const rejectedEvents = await contract.queryFilter(rejectedFilter, 0, 'latest');
+        
+        for (const event of rejectedEvents) {
+          const block = await provider.getBlock(event.blockNumber);
+          allEvents.push({
+            type: 'Rejected',
+            txHash: event.transactionHash,
+            blockNumber: event.blockNumber,
+            timestamp: block ? block.timestamp : 0,
+            actor: event.args.owner,
+            requester: event.args.requester,
+            contentId: event.args.contentId,
+            details: `${event.args.owner?.substring(0, 10)}... rejected request from ${event.args.requester?.substring(0, 10)}...`
+          });
+        }
+      } catch (err) {
+        console.log('Could not load rejection events:', err.message);
       }
 
       // Query ALL DuplicateRegistrationAttempt events (network-wide)
@@ -155,6 +200,7 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
       case 'Registered': return 'registered';
       case 'Transferred': return 'transferred';
       case 'Requested': return 'requested';
+      case 'Rejected': return 'rejected';
       case 'Duplicate Attempt': return 'duplicate';
       default: return '';
     }
@@ -165,9 +211,38 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
       case 'Registered': return '📝';
       case 'Transferred': return '🔄';
       case 'Requested': return '📤';
+      case 'Rejected': return '❌';
       case 'Duplicate Attempt': return '🚨';
       default: return '📋';
     }
+  };
+
+  const getStatusBadge = (status) => {
+    if (!status) return null;
+    
+    const statusColors = {
+      'Pending': { bg: 'rgba(251, 191, 36, 0.2)', color: '#f59e0b' },
+      'Approved': { bg: 'var(--success-bg)', color: 'var(--success-text)' },
+      'Rejected': { bg: 'var(--error-bg)', color: 'var(--error-text)' }
+    };
+    
+    const style = statusColors[status] || {};
+    return (
+      <span 
+        className="status-badge"
+        style={{ 
+          background: style.bg, 
+          color: style.color,
+          padding: '4px 10px',
+          borderRadius: '12px',
+          fontSize: '11px',
+          fontWeight: '600',
+          marginLeft: '8px'
+        }}
+      >
+        {status}
+      </span>
+    );
   };
 
   return (
@@ -207,6 +282,12 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
           onClick={() => setFilter('requested')}
         >
           📤 Requested ({transactions.filter(t => t.type === 'Requested').length})
+        </button>
+        <button 
+          className={`filter-tab ${filter === 'rejected' ? 'active' : ''}`}
+          onClick={() => setFilter('rejected')}
+        >
+          ❌ Rejected ({transactions.filter(t => t.type === 'Rejected').length})
         </button>
         <button 
           className={`filter-tab ${filter === 'duplicate attempt' ? 'active' : ''}`}
@@ -255,6 +336,7 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
                     <div className="timeline-header">
                       <span className={`type-badge ${getTypeColor(tx.type)}`}>
                         {tx.type}
+                        {tx.status && getStatusBadge(tx.status)}
                       </span>
                       <span className="timeline-time">{formatDate(tx.timestamp)}</span>
                     </div>
@@ -287,6 +369,7 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
                   <tr>
                     <th>Action</th>
                     <th>Details</th>
+                    <th>Status</th>
                     <th>Tx Hash</th>
                     <th>Block</th>
                     <th>Time</th>
@@ -301,6 +384,9 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
                         </span>
                       </td>
                       <td className="details-cell">{tx.details}</td>
+                      <td>
+                        {tx.status ? getStatusBadge(tx.status) : '-'}
+                      </td>
                       <td>
                         <code 
                           className="tx-hash clickable"
@@ -486,6 +572,11 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
           background: rgba(251, 191, 36, 0.2);
         }
 
+        .timeline-item.rejected .timeline-marker {
+          border-color: #ef4444;
+          background: rgba(239, 68, 68, 0.2);
+        }
+
         .timeline-item.duplicate .timeline-marker {
           border-color: #ef4444;
           background: rgba(239, 68, 68, 0.2);
@@ -530,6 +621,11 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
         .type-badge.requested {
           background: rgba(251, 191, 36, 0.2);
           color: #f59e0b;
+        }
+
+        .type-badge.rejected {
+          background: rgba(239, 68, 68, 0.2);
+          color: #ef4444;
         }
 
         .type-badge.duplicate {
