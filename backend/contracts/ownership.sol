@@ -28,6 +28,16 @@ contract ContentRegistry {
     mapping(string => mapping(address => TransferRequest)) private transferRequests; // contentId => requester => request
     mapping(string => address[]) private contentRequesters; // contentId => list of requester addresses
 
+    struct Approval {
+        address requester;
+        uint256 price;
+        uint256 timestamp;
+        bool isActive;
+    }
+
+    uint256 public cooldownDuration = 86400; // 1 day default, configurable
+    mapping(string => Approval) private activeApprovals; // contentId => Approval
+
     event ContentRegistered(string indexed contentId, address indexed owner, uint256 timestamp);
     event ContentTransferred(string indexed contentId, address indexed from, address indexed to, uint256 timestamp);
     event ContentAuthorityUpdated(string indexed contentId, string oldCid, string newCid, address indexed authority, uint256 timestamp);
@@ -35,6 +45,9 @@ contract ContentRegistry {
     event OwnershipApproved(string indexed contentId, address indexed owner, address indexed buyer, uint256 timestamp);
     event OwnershipRejected(string indexed contentId, address indexed owner, address indexed requester, uint256 timestamp);
     event DuplicateRegistrationAttempt(string indexed contentId, address indexed attempter, address indexed currentOwner, uint256 timestamp);
+    event TransferApproved(string indexed contentId, address indexed owner, address indexed requester, uint256 price, uint256 timestamp);
+    event ApprovalCleared(string indexed contentId, address indexed requester, uint256 timestamp);
+    event RequestWithdrawn(string indexed contentId, address indexed requester, uint256 timestamp);
 
     modifier onlyAuthority() {
         require(msg.sender == authority, "only authority can call");
@@ -147,7 +160,7 @@ contract ContentRegistry {
         emit OwnershipRequested(contentId, msg.sender, price, block.timestamp);
     }
 
-    // Approve transfer request (owner approves)
+    // Approve transfer request (owner approves — records approval without transferring)
     function approveTransfer(string memory contentId, address requester) public {
         require(cidExists[contentId], "Content not registered");
         Content storage c = contents[contentId];
@@ -155,32 +168,98 @@ contract ContentRegistry {
         TransferRequest storage req = transferRequests[contentId][requester];
         require(req.isPending, "No pending request from this user");
 
-        address buyer = req.requester;
-        req.isPending = false;
+        // Check that no other active non-expired approval exists for this content
+        Approval storage existing = activeApprovals[contentId];
+        if (existing.isActive && block.timestamp <= existing.timestamp + cooldownDuration) {
+            revert("another approval is active");
+        }
 
-        // Transfer ownership
-        address prev = c.owner;
-        c.owner = buyer;
-        c.ownerHistory.push(buyer);
+        // Record the approval — keep request pending so it stays visible
+        activeApprovals[contentId] = Approval({
+            requester: requester,
+            price: req.price,
+            timestamp: block.timestamp,
+            isActive: true
+        });
+
+        // Do NOT set isPending = false here — the request stays visible until payment completes or is cancelled
+
+        emit TransferApproved(contentId, msg.sender, requester, req.price, block.timestamp);
+    }
+
+    // Finalize transfer after payment confirmed (authority-only)
+    function finalizeTransfer(string memory contentId, address requester) public onlyAuthority {
+        Approval storage approval = activeApprovals[contentId];
+        require(approval.isActive == true && approval.requester == requester, "no active approval");
+        require(block.timestamp <= approval.timestamp + cooldownDuration, "approval expired");
+
+        Content storage c = contents[contentId];
+        address previousOwner = c.owner;
+
+        // Execute ownership transfer
+        c.owner = requester;
+        c.ownerHistory.push(requester);
         c.timeHistory.push(block.timestamp);
-        userContents[buyer].push(contentId);
+        userContents[requester].push(contentId);
 
-        // Auto-reject all other pending requests for this content
-        address[] storage requesters = contentRequesters[contentId];
+        // Clear the approval
+        approval.isActive = false;
+
+        // Now reject all pending requests (including the approved one) since transfer is done
+        address[] memory requesters = contentRequesters[contentId];
         for (uint256 i = 0; i < requesters.length; i++) {
-            if (requesters[i] != buyer) {
-                TransferRequest storage otherReq = transferRequests[contentId][requesters[i]];
-                if (otherReq.isPending) {
-                    otherReq.isPending = false;
-                    emit OwnershipRejected(contentId, prev, requesters[i], block.timestamp);
+            TransferRequest storage req = transferRequests[contentId][requesters[i]];
+            if (req.isPending) {
+                req.isPending = false;
+                if (requesters[i] != requester) {
+                    emit OwnershipRejected(contentId, previousOwner, requesters[i], block.timestamp);
                 }
             }
         }
-        // Clear the requesters list since all requests are resolved
+
+        // Delete contentRequesters for this content
         delete contentRequesters[contentId];
 
-        emit OwnershipApproved(contentId, prev, buyer, block.timestamp);
-        emit ContentTransferred(contentId, prev, buyer, block.timestamp);
+        emit OwnershipApproved(contentId, previousOwner, requester, block.timestamp);
+        emit ContentTransferred(contentId, previousOwner, requester, block.timestamp);
+    }
+
+    // Cancel an active approval (requester decides not to pay)
+    function cancelApproval(string memory contentId) public {
+        Approval storage approval = activeApprovals[contentId];
+        require(approval.isActive, "no active approval");
+        require(approval.requester == msg.sender, "only approved requester can cancel");
+
+        approval.isActive = false;
+
+        // Withdraw the requester's pending request
+        TransferRequest storage req = transferRequests[contentId][msg.sender];
+        if (req.isPending) {
+            req.isPending = false;
+        }
+
+        emit RequestWithdrawn(contentId, msg.sender, block.timestamp);
+    }
+
+    // Clear an expired approval so the owner can approve someone else
+    function clearExpiredApproval(string memory contentId) public {
+        Approval storage approval = activeApprovals[contentId];
+        require(approval.isActive == true, "no active approval");
+        require(block.timestamp > approval.timestamp + cooldownDuration, "approval not expired");
+
+        approval.isActive = false;
+
+        emit ApprovalCleared(contentId, approval.requester, block.timestamp);
+    }
+
+    // Update cooldown duration (authority-only, for testing with shorter durations)
+    function setCooldownDuration(uint256 newDuration) public onlyAuthority {
+        cooldownDuration = newDuration;
+    }
+
+    // View function to get the approval for a content item
+    function getApproval(string memory contentId) public view returns (Approval memory) {
+        return activeApprovals[contentId];
     }
 
     // Reject transfer request (owner rejects)
@@ -194,6 +273,17 @@ contract ContentRegistry {
         req.isPending = false;
 
         emit OwnershipRejected(contentId, msg.sender, requester, block.timestamp);
+    }
+
+    // Withdraw a pending transfer request (requester cancels their own request)
+    function withdrawRequest(string memory contentId) public {
+        require(cidExists[contentId], "Content not registered");
+        TransferRequest storage req = transferRequests[contentId][msg.sender];
+        require(req.isPending, "No pending request to withdraw");
+
+        req.isPending = false;
+
+        emit RequestWithdrawn(contentId, msg.sender, block.timestamp);
     }
 
     // Get pending transfer request for a content from specific requester

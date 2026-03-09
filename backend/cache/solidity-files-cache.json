@@ -2,8 +2,8 @@
   "_format": "hh-sol-cache-2",
   "files": {
     "/Users/hariprvs/Ownership-Proof-DAPP/backend/contracts/ownership.sol": {
-      "lastModificationDate": 1772989529213,
-      "contentHash": "d0b45d233de7eb38390b71d9d0b19a57",
+      "lastModificationDate": 1773078618230,
+      "contentHash": "eb75beb39bb2c46b9441e637c7b131a9",
       "sourceName": "contracts/ownership.sol",
       "solcConfig": {
         "version": "0.8.28",

@@ -14,7 +14,9 @@ function Sidebar({
   account, 
   onDisconnect,
   isIpfsConnected,
-  isContractConnected 
+  isContractConnected,
+  alertCount = 0,
+  paymentCount = 0
 }) {
   
   const formatAddress = (addr) => {
@@ -27,6 +29,7 @@ function Sidebar({
     { id: 'register', label: 'Register Content', icon: '📤', description: 'Upload & register new content' },
     { id: 'contents', label: 'My Contents', icon: '📁', description: 'View your owned contents' },
     { id: 'alerts', label: 'Alerts', icon: '🔔', description: 'Pending transfer requests' },
+    { id: 'payment', label: 'Payments', icon: '💳', description: 'Complete pending payments' },
     { id: 'history', label: 'Transaction History', icon: '📜', description: 'View activity log' },
   ];
 
@@ -58,19 +61,25 @@ function Sidebar({
       {/* Navigation */}
       <nav className="sidebar-nav">
         <div className="nav-label">MENU</div>
-        {navItems.map(item => (
-          <button
-            key={item.id}
-            className={`nav-item ${activePage === item.id ? 'active' : ''}`}
-            onClick={() => onPageChange(item.id)}
-          >
-            <span className="nav-icon">{item.icon}</span>
-            <div className="nav-text">
-              <span className="nav-title">{item.label}</span>
-              <span className="nav-desc">{item.description}</span>
-            </div>
-          </button>
-        ))}
+        {navItems.map(item => {
+          const badgeCount = item.id === 'alerts' ? alertCount : item.id === 'payment' ? paymentCount : 0;
+          return (
+            <button
+              key={item.id}
+              className={`nav-item ${activePage === item.id ? 'active' : ''}`}
+              onClick={() => onPageChange(item.id)}
+            >
+              <span className="nav-icon">
+                {item.icon}
+                {badgeCount > 0 && <span className="nav-badge">{badgeCount}</span>}
+              </span>
+              <div className="nav-text">
+                <span className="nav-title">{item.label}</span>
+                <span className="nav-desc">{item.description}</span>
+              </div>
+            </button>
+          );
+        })}
       </nav>
 
       {/* Wallet Info */}
@@ -222,6 +231,31 @@ function Sidebar({
           justify-content: center;
           background: var(--sidebar-highlight, rgba(255,255,255,0.1));
           border-radius: 8px;
+          position: relative;
+        }
+
+        .nav-badge {
+          position: absolute;
+          top: -4px;
+          right: -4px;
+          background: #ef4444;
+          color: white;
+          font-size: 10px;
+          font-weight: 700;
+          min-width: 18px;
+          height: 18px;
+          border-radius: 9px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 0 4px;
+          box-shadow: 0 2px 4px rgba(239, 68, 68, 0.4);
+          animation: badge-pulse 2s infinite;
+        }
+
+        @keyframes badge-pulse {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.1); }
         }
 
         .nav-item.active .nav-icon {

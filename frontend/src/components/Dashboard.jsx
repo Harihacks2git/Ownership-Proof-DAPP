@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { ethers } from 'ethers';
-import axios from 'axios';
 import contractABI from '../abi/ContentRegistry.json';
-import { IPFS_CONFIG, CONTRACT_CONFIG } from '../config';
+import { CONTRACT_CONFIG } from '../config';
 
 // Import components
 import Sidebar from './Sidebar';
@@ -11,6 +10,7 @@ import MyContents from './pages/MyContents';
 import TransactionHistory from './pages/TransactionHistory';
 import AllContents from './pages/AllContents';
 import Alerts from './pages/Alerts';
+import PaymentPage from './pages/PaymentPage';
 
 const contractAddress = CONTRACT_CONFIG.address;
 
@@ -39,6 +39,10 @@ function Dashboard({ account, onDisconnect }) {
   
   // Mobile sidebar toggle
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  // Notification badge counts
+  const [alertCount, setAlertCount] = useState(0);
+  const [paymentCount, setPaymentCount] = useState(0);
 
   // Check connections on mount
   useEffect(() => {
@@ -85,6 +89,65 @@ function Dashboard({ account, onDisconnect }) {
     setActivePage(page);
     setIsSidebarOpen(false); // Close mobile sidebar
   };
+
+  // Load notification counts
+  useEffect(() => {
+    const loadCounts = async () => {
+      if (!account || !isContractConnected || !window.ethereum) return;
+      try {
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const contract = new ethers.Contract(contractAddress, contractABI.abi, provider);
+        const userCids = await contract.getUserContents(account);
+
+        // Count pending transfer requests for owned content (alerts)
+        let alerts = 0;
+        for (const cid of userCids) {
+          try {
+            const content = await contract.getContent(cid);
+            if (content.owner.toLowerCase() !== account.toLowerCase()) continue;
+            const reqFilter = contract.filters.OwnershipRequested(cid);
+            const reqEvents = await contract.queryFilter(reqFilter, 0, 'latest');
+            const seen = new Set();
+            for (const ev of reqEvents) {
+              const addr = ev.args.requester;
+              if (seen.has(addr)) continue;
+              seen.add(addr);
+              const req = await contract.getTransferRequest(cid, addr);
+              if (req.isPending) alerts++;
+            }
+          } catch (e) { /* skip */ }
+        }
+        setAlertCount(alerts);
+
+        // Count pending payments (approvals where current user is requester)
+        let payments = 0;
+        const regFilter = contract.filters.ContentRegistered();
+        const regEvents = await contract.queryFilter(regFilter, 0, 'latest');
+        const allCids = new Set();
+        const seenOwners = new Set();
+        for (const ev of regEvents) {
+          if (seenOwners.has(ev.args.owner)) continue;
+          seenOwners.add(ev.args.owner);
+          try {
+            const ownerCids = await contract.getUserContents(ev.args.owner);
+            for (const c of ownerCids) allCids.add(c);
+          } catch (e) { /* skip */ }
+        }
+        for (const cid of allCids) {
+          try {
+            const approval = await contract.getApproval(cid);
+            if (approval.isActive && approval.requester.toLowerCase() === account.toLowerCase()) {
+              payments++;
+            }
+          } catch (e) { /* skip */ }
+        }
+        setPaymentCount(payments);
+      } catch (err) {
+        console.log('Error loading notification counts:', err.message);
+      }
+    };
+    loadCounts();
+  }, [account, isContractConnected, refreshTrigger]);
 
   // Handle successful registration - trigger refresh
   const handleRegistrationSuccess = () => {
@@ -135,6 +198,14 @@ function Dashboard({ account, onDisconnect }) {
             refreshTrigger={refreshTrigger}
           />
         );
+      case 'payment':
+        return (
+          <PaymentPage 
+            account={account}
+            isContractConnected={isContractConnected}
+            refreshTrigger={refreshTrigger}
+          />
+        );
       default:
         return (
           <AllContents 
@@ -173,6 +244,8 @@ function Dashboard({ account, onDisconnect }) {
           onDisconnect={onDisconnect}
           isIpfsConnected={isIpfsConnected}
           isContractConnected={isContractConnected}
+          alertCount={alertCount}
+          paymentCount={paymentCount}
         />
       </div>
 

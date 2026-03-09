@@ -24,3 +24,8 @@ export const CONTRACT_CONFIG = {
 export const AUTHORITY_CONFIG = {
   apiUrl: import.meta.env.VITE_AUTHORITY_API_URL || 'http://localhost:3001'
 };
+
+// Payment Server Configuration (for Stripe payment integration)
+export const PAYMENT_CONFIG = {
+  apiUrl: import.meta.env.VITE_PAYMENT_API_URL || 'http://localhost:3002'
+};

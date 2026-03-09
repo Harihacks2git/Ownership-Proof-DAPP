@@ -6,6 +6,37 @@ import { CONTRACT_CONFIG, IPFS_CONFIG } from '../../config';
 const contractAddress = CONTRACT_CONFIG.address;
 
 /**
+ * CountdownTimer Component
+ * Displays a live HH:MM:SS countdown until expiryTimestamp (unix seconds).
+ * Shows "Expired" when the timer reaches zero.
+ */
+function CountdownTimer({ expiryTimestamp }) {
+  const [remaining, setRemaining] = useState(() => {
+    const now = Math.floor(Date.now() / 1000);
+    return Math.max(0, expiryTimestamp - now);
+  });
+
+  useEffect(() => {
+    if (remaining <= 0) return;
+    const interval = setInterval(() => {
+      const now = Math.floor(Date.now() / 1000);
+      const left = Math.max(0, expiryTimestamp - now);
+      setRemaining(left);
+      if (left <= 0) clearInterval(interval);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [expiryTimestamp, remaining]);
+
+  const hours = Math.floor(remaining / 3600);
+  const minutes = Math.floor((remaining % 3600) / 60);
+  const seconds = remaining % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+
+  if (remaining <= 0) return <span className="countdown expired">Expired</span>;
+  return <span className="countdown active">{pad(hours)}:{pad(minutes)}:{pad(seconds)}</span>;
+}
+
+/**
  * Alerts Page Component
  * 
  * Shows pending transfer requests for content owned by the current user.
@@ -14,10 +45,12 @@ const contractAddress = CONTRACT_CONFIG.address;
  */
 function Alerts({ account, isContractConnected, refreshTrigger }) {
   const [alerts, setAlerts] = useState([]);
+  const [approvedAlerts, setApprovedAlerts] = useState([]);
   const [securityAlerts, setSecurityAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('transfer'); // 'transfer' or 'security'
+  const [successMessage, setSuccessMessage] = useState('');
 
   const loadAlerts = useCallback(async () => {
     if (!account || !isContractConnected) {
@@ -64,6 +97,12 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
             const transferReq = await contract.getTransferRequest(cid, requesterAddr);
             
             if (transferReq.isPending && transferReq.requester !== ethers.ZeroAddress) {
+              // Check if this requester has an active approval — if so, skip (shown in Approved section)
+              const approval = await contract.getApproval(cid);
+              if (approval.isActive && approval.requester.toLowerCase() === requesterAddr.toLowerCase()) {
+                continue;
+              }
+
               const content = await contract.getContent(cid);
               const requesterEvents = requestEvents.filter(e => e.args.requester === requesterAddr);
               const latestRequest = requesterEvents[requesterEvents.length - 1];
@@ -83,6 +122,38 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
           }
         } catch (err) {
           console.error(`Error loading transfer requests for ${cid}:`, err.message);
+        }
+      }
+
+      // Load on-chain approvals for owned content
+      const approvedAlertsList = [];
+      const cooldownDuration = await contract.cooldownDuration();
+      const latestBlock = await provider.getBlock('latest');
+      const currentTimestamp = latestBlock.timestamp;
+
+      for (const cid of userCids) {
+        try {
+          const contentData = await contract.getContent(cid);
+          if (contentData.owner.toLowerCase() !== account.toLowerCase()) continue;
+
+          const approval = await contract.getApproval(cid);
+          if (approval.isActive) {
+            const expiryTimestamp = Number(approval.timestamp) + Number(cooldownDuration);
+            const status = currentTimestamp <= expiryTimestamp ? 'waiting_payment' : 'expired';
+
+            approvedAlertsList.push({
+              cid,
+              contentTitle: contentData.title || 'Untitled',
+              contentType: contentData.contentType || 'Document',
+              requester: approval.requester,
+              price: approval.price,
+              approvalTimestamp: Number(approval.timestamp),
+              expiryTimestamp,
+              status
+            });
+          }
+        } catch (err) {
+          console.error(`Error loading approval for ${cid}:`, err.message);
         }
       }
 
@@ -169,6 +240,7 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
       console.log('Total security warnings:', securityAlertsList.length);
       
       setAlerts(transferAlertsList);
+      setApprovedAlerts(approvedAlertsList);
       setSecurityAlerts(securityAlertsList);
     } catch (err) {
       console.error('Error loading alerts:', err);
@@ -205,6 +277,7 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
   const handleApprove = async (cid, requester) => {
     try {
       setError('');
+      setSuccessMessage('');
       console.log('Approving transfer:', { cid, requester });
       
       const provider = new ethers.BrowserProvider(window.ethereum);
@@ -236,6 +309,9 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
       await tx.wait();
       console.log('Transaction confirmed');
       
+      setSuccessMessage('Requester has been notified to complete payment.');
+      setTimeout(() => setSuccessMessage(''), 5000);
+
       // Reload alerts after approval
       loadAlerts();
     } catch (err) {
@@ -284,6 +360,31 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
       }
     }
   };
+
+  const handleClearExpired = async (cid) => {
+    try {
+      setError('');
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const contract = new ethers.Contract(contractAddress, contractABI.abi, signer);
+
+      const signerAddress = await signer.getAddress();
+      const nonce = await provider.getTransactionCount(signerAddress, 'latest');
+
+      const tx = await contract.clearExpiredApproval(cid, { nonce });
+      await tx.wait();
+
+      loadAlerts();
+    } catch (err) {
+      console.error('Error clearing expired approval:', err);
+      if (err.message?.includes('nonce') || err.message?.includes('Nonce')) {
+        setError('Transaction nonce error. Please reset your MetaMask account: Settings > Advanced > Clear activity tab data');
+      } else {
+        setError('Failed to clear expired approval: ' + (err.reason || err.shortMessage || err.message));
+      }
+    }
+  };
+
 
   return (
     <div className="alerts-page">
@@ -355,6 +456,12 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
         </div>
       )}
 
+      {successMessage && (
+        <div className="success-banner">
+          ✅ {successMessage}
+        </div>
+      )}
+
       {/* Alerts Display */}
       <div className="alerts-container">
         {loading ? (
@@ -376,92 +483,143 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
           </div>
         ) : activeTab === 'transfer' ? (
           // Transfer Requests Tab
-          alerts.length === 0 ? (
-            <div className="empty-state success">
-              <div className="empty-icon">✅</div>
-              <h3>No Pending Requests</h3>
-              <p>You don't have any pending ownership transfer requests at the moment.</p>
-            </div>
-          ) : (
-            <div className="alerts-list">
-              {alerts.map((alert, idx) => (
-                <div key={idx} className="alert-card transfer">
-                  <div className="alert-header">
-                    <div className="alert-icon">📤</div>
-                    <div className="alert-title">
-                      <h3>Ownership Transfer Request</h3>
-                      <span className="alert-time">{formatDate(alert.timestamp)}</span>
+          <>
+            {alerts.length === 0 ? (
+              <div className="empty-state success">
+                <div className="empty-icon">✅</div>
+                <h3>No Pending Requests</h3>
+                <p>You don't have any pending ownership transfer requests at the moment.</p>
+              </div>
+            ) : (
+              <div className="alerts-list">
+                {alerts.map((alert, idx) => (
+                  <div key={idx} className="alert-card transfer">
+                    <div className="alert-header">
+                      <div className="alert-icon">📤</div>
+                      <div className="alert-title">
+                        <h3>Ownership Transfer Request</h3>
+                        <span className="alert-time">{formatDate(alert.timestamp)}</span>
+                      </div>
+                    </div>
+
+                    <div className="alert-body">
+                      <div className="alert-message">
+                        <strong>{formatAddress(alert.requester)}</strong> wants to purchase 
+                        your digital property <strong>"{alert.contentTitle}"</strong> for <strong>{formatPrice(alert.price)}</strong>
+                      </div>
+
+                      <div className="alert-details">
+                        <div className="detail-row">
+                          <span className="detail-label">Content Title:</span>
+                          <span className="detail-value">{alert.contentTitle}</span>
+                        </div>
+                        <div className="detail-row">
+                          <span className="detail-label">Content Type:</span>
+                          <span className="detail-value">{alert.contentType}</span>
+                        </div>
+                        <div className="detail-row">
+                          <span className="detail-label">Content ID (CID):</span>
+                          <code className="detail-value">{alert.cid}</code>
+                        </div>
+                        <div className="detail-row">
+                          <span className="detail-label">Requester Address:</span>
+                          <code className="detail-value">{alert.requester}</code>
+                        </div>
+                        <div className="detail-row">
+                          <span className="detail-label">Offered Price:</span>
+                          <span className="detail-value price">{formatPrice(alert.price)}</span>
+                        </div>
+                        {alert.txHash && (
+                          <div className="detail-row">
+                            <span className="detail-label">Transaction Hash:</span>
+                            <code 
+                              className="detail-value clickable"
+                              onClick={() => navigator.clipboard.writeText(alert.txHash)}
+                              title="Click to copy"
+                            >
+                              {formatTxHash(alert.txHash)}
+                            </code>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="alert-actions">
+                        <button 
+                          className="action-btn approve"
+                          onClick={() => handleApprove(alert.cid, alert.requester)}
+                        >
+                          ✅ Approve Transfer
+                        </button>
+                        <button 
+                          className="action-btn reject"
+                          onClick={() => handleReject(alert.cid, alert.requester)}
+                        >
+                          ❌ Reject Request
+                        </button>
+                        <a 
+                          href={`${IPFS_CONFIG.gatewayUrl}/${alert.cid}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="action-btn secondary"
+                        >
+                          🔗 View on IPFS
+                        </a>
+                      </div>
                     </div>
                   </div>
+                ))}
+              </div>
+            )}
 
-                  <div className="alert-body">
-                    <div className="alert-message">
-                      <strong>{formatAddress(alert.requester)}</strong> wants to purchase 
-                      your digital property <strong>"{alert.contentTitle}"</strong> for <strong>{formatPrice(alert.price)}</strong>
+            {/* Approved Transfers Section */}
+            {approvedAlerts.length > 0 && (
+              <>
+                <h3 className="section-title">Approved Transfers</h3>
+                {approvedAlerts.map((alert, idx) => (
+                  <div key={`approved-${idx}`} className={`alert-card ${alert.status === 'waiting_payment' ? 'approved' : 'expired-approval'}`}>
+                    <div className="alert-header">
+                      <div className="alert-icon">{alert.status === 'waiting_payment' ? '⏳' : '⏰'}</div>
+                      <div className="alert-title">
+                        <h3>{alert.contentTitle}</h3>
+                        <div className="alert-badges">
+                          {alert.status === 'waiting_payment' ? (
+                            <span className="status-badge waiting">Waiting for Payment</span>
+                          ) : (
+                            <span className="status-badge expired">Expired</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-
-                    <div className="alert-details">
-                      <div className="detail-row">
-                        <span className="detail-label">Content Title:</span>
-                        <span className="detail-value">{alert.contentTitle}</span>
-                      </div>
-                      <div className="detail-row">
-                        <span className="detail-label">Content Type:</span>
-                        <span className="detail-value">{alert.contentType}</span>
-                      </div>
-                      <div className="detail-row">
-                        <span className="detail-label">Content ID (CID):</span>
-                        <code className="detail-value">{alert.cid}</code>
-                      </div>
-                      <div className="detail-row">
-                        <span className="detail-label">Requester Address:</span>
-                        <code className="detail-value">{alert.requester}</code>
-                      </div>
-                      <div className="detail-row">
-                        <span className="detail-label">Offered Price:</span>
-                        <span className="detail-value price">{formatPrice(alert.price)}</span>
-                      </div>
-                      {alert.txHash && (
+                    <div className="alert-body">
+                      <div className="alert-details">
                         <div className="detail-row">
-                          <span className="detail-label">Transaction Hash:</span>
-                          <code 
-                            className="detail-value clickable"
-                            onClick={() => navigator.clipboard.writeText(alert.txHash)}
-                            title="Click to copy"
-                          >
-                            {formatTxHash(alert.txHash)}
-                          </code>
+                          <span className="detail-label">Approved Requester:</span>
+                          <code className="detail-value">{alert.requester}</code>
+                        </div>
+                        <div className="detail-row">
+                          <span className="detail-label">Price:</span>
+                          <span className="detail-value price">{formatPrice(alert.price)}</span>
+                        </div>
+                        <div className="detail-row">
+                          <span className="detail-label">Time Remaining:</span>
+                          <span className="detail-value">
+                            <CountdownTimer expiryTimestamp={alert.expiryTimestamp} />
+                          </span>
+                        </div>
+                      </div>
+                      {alert.status === 'expired' && (
+                        <div className="alert-actions">
+                          <button className="action-btn reject" onClick={() => handleClearExpired(alert.cid)}>
+                            🗑️ Clear Expired Approval
+                          </button>
                         </div>
                       )}
                     </div>
-
-                    <div className="alert-actions">
-                      <button 
-                        className="action-btn approve"
-                        onClick={() => handleApprove(alert.cid, alert.requester)}
-                      >
-                        ✅ Approve Transfer
-                      </button>
-                      <button 
-                        className="action-btn reject"
-                        onClick={() => handleReject(alert.cid, alert.requester)}
-                      >
-                        ❌ Reject Request
-                      </button>
-                      <a 
-                        href={`${IPFS_CONFIG.gatewayUrl}/${alert.cid}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="action-btn secondary"
-                      >
-                        🔗 View on IPFS
-                      </a>
-                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )
+                ))}
+              </>
+            )}
+          </>
         ) : (
           // Security Warnings Tab
           securityAlerts.length === 0 ? (
@@ -677,6 +835,15 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
           background: var(--error-bg);
           border: 1px solid var(--error-text);
           color: var(--error-text);
+          padding: 14px 20px;
+          border-radius: 10px;
+          margin-bottom: 20px;
+        }
+
+        .success-banner {
+          background: var(--success-bg);
+          border: 1px solid var(--success-text);
+          color: var(--success-text);
           padding: 14px 20px;
           border-radius: 10px;
           margin-bottom: 20px;
@@ -957,6 +1124,72 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
 
         .action-btn.info:hover {
           background: rgba(59, 130, 246, 0.2);
+        }
+
+        /* Approved Transfers Section */
+        .section-title {
+          margin: 24px 0 16px;
+          font-size: 18px;
+          color: var(--text-primary);
+        }
+
+        .alert-badges {
+          display: flex;
+          gap: 8px;
+          margin-top: 4px;
+        }
+
+        .status-badge {
+          display: inline-block;
+          padding: 4px 12px;
+          border-radius: 20px;
+          font-size: 12px;
+          font-weight: 600;
+        }
+
+        .status-badge.waiting {
+          background: rgba(251, 191, 36, 0.2);
+          color: #f59e0b;
+          border: 1px solid rgba(251, 191, 36, 0.4);
+        }
+
+        .status-badge.expired {
+          background: rgba(239, 68, 68, 0.2);
+          color: #ef4444;
+          border: 1px solid rgba(239, 68, 68, 0.4);
+        }
+
+        .alert-card.approved {
+          border-color: rgba(251, 191, 36, 0.4);
+        }
+
+        .alert-card.approved .alert-header {
+          background: rgba(251, 191, 36, 0.1);
+          border-bottom-color: rgba(251, 191, 36, 0.2);
+        }
+
+        .alert-card.expired-approval {
+          border-color: rgba(239, 68, 68, 0.3);
+          opacity: 0.8;
+        }
+
+        .alert-card.expired-approval .alert-header {
+          background: rgba(239, 68, 68, 0.1);
+          border-bottom-color: rgba(239, 68, 68, 0.2);
+        }
+
+        .countdown {
+          font-family: monospace;
+          font-size: 16px;
+          font-weight: 700;
+        }
+
+        .countdown.active {
+          color: #f59e0b;
+        }
+
+        .countdown.expired {
+          color: #ef4444;
         }
 
         @media (max-width: 768px) {

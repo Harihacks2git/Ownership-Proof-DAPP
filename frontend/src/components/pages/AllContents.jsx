@@ -19,6 +19,8 @@ function AllContents({ account, isContractConnected, refreshTrigger }) {
   const [selectedContent, setSelectedContent] = useState(null);
   const [requestingFor, setRequestingFor] = useState(null);
   const [requestPrice, setRequestPrice] = useState('0');
+  const [approvedContentIds, setApprovedContentIds] = useState(new Map()); // contentId => { isExpired }
+  const [pendingRequestCids, setPendingRequestCids] = useState(new Set()); // CIDs where current user has a pending request
 
   const loadAllContents = useCallback(async () => {
     if (!isContractConnected) {
@@ -89,13 +91,52 @@ function AllContents({ account, isContractConnected, refreshTrigger }) {
       // Sort by timestamp (newest first)
       contentList.sort((a, b) => b.timestamp - a.timestamp);
       setContents(contentList);
+
+      // Check which content items the current user has pending requests for
+      if (account) {
+        const pendingSet = new Set();
+        for (const item of contentList) {
+          try {
+            const req = await contract.getTransferRequest(item.cid, account);
+            if (req.isPending) pendingSet.add(item.cid);
+          } catch (err) { /* ignore */ }
+        }
+        setPendingRequestCids(pendingSet);
+      }
+
+      // Check for active approvals where current user is the requester
+      // We already have all CIDs in contentList, so just check each one directly
+      if (account) {
+        const approvedMap = new Map();
+        try {
+          const cooldownDuration = await contract.cooldownDuration();
+          const latestBlock = await provider.getBlock('latest');
+          const currentTimestamp = latestBlock.timestamp;
+
+          for (const item of contentList) {
+            try {
+              const approval = await contract.getApproval(item.cid);
+              if (approval.isActive && approval.requester.toLowerCase() === account.toLowerCase()) {
+                const expiryTimestamp = Number(approval.timestamp) + Number(cooldownDuration);
+                const isExpired = currentTimestamp > expiryTimestamp;
+                approvedMap.set(item.cid, { isExpired });
+              }
+            } catch (err) {
+              console.error('Error checking approval:', err.message);
+            }
+          }
+        } catch (err) {
+          console.error('Error querying approval events:', err.message);
+        }
+        setApprovedContentIds(approvedMap);
+      }
     } catch (err) {
       console.error('Error loading contents:', err);
       setError('Failed to load contents: ' + (err.message || 'Unknown error'));
     } finally {
       setLoading(false);
     }
-  }, [isContractConnected]);
+  }, [isContractConnected, account]);
 
   useEffect(() => {
     loadAllContents();
@@ -134,7 +175,8 @@ function AllContents({ account, isContractConnected, refreshTrigger }) {
       setRequestingFor(null);
       setRequestPrice('0');
       
-      // Update the content status to "Requested" immediately
+      // Immediately update UI — add to pending set so button switches to Withdraw
+      setPendingRequestCids(prev => new Set([...prev, cid]));
       setContents(prevContents => 
         prevContents.map(c => 
           c.cid === cid ? { ...c, requestStatus: 'Requested' } : c
@@ -153,6 +195,28 @@ function AllContents({ account, isContractConnected, refreshTrigger }) {
       } else {
         setError('Failed to request ownership: ' + (err.shortMessage || err.message));
       }
+    }
+  };
+
+  const handleWithdrawRequest = async (cid) => {
+    try {
+      setError('');
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const contract = new ethers.Contract(contractAddress, contractABI.abi, signer);
+
+      const tx = await contract.withdrawRequest(cid);
+      await tx.wait();
+
+      setPendingRequestCids(prev => {
+        const next = new Set(prev);
+        next.delete(cid);
+        return next;
+      });
+      setContents(prev => prev.map(c => c.cid === cid ? { ...c, requestStatus: null } : c));
+    } catch (err) {
+      console.error('Withdraw error:', err);
+      setError('Failed to withdraw request: ' + (err.reason || err.shortMessage || err.message));
     }
   };
 
@@ -327,7 +391,7 @@ function AllContents({ account, isContractConnected, refreshTrigger }) {
                   >
                     🔗 View on IPFS
                   </a>
-                  {!isOwner(content) && account && (
+                  {!isOwner(content) && account && !pendingRequestCids.has(content.cid) && (
                     <button 
                       className="action-btn request"
                       onClick={(e) => {
@@ -338,7 +402,29 @@ function AllContents({ account, isContractConnected, refreshTrigger }) {
                       📤 Request Ownership
                     </button>
                   )}
+                  {!isOwner(content) && account && pendingRequestCids.has(content.cid) && (
+                    <button 
+                      className="action-btn withdraw"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleWithdrawRequest(content.cid);
+                      }}
+                    >
+                      ↩️ Withdraw Request
+                    </button>
+                  )}
                 </div>
+
+                {/* Approval Status Badge */}
+                {approvedContentIds.has(content.cid) && (
+                  <div className="approval-status" style={{ marginTop: '12px' }}>
+                    {approvedContentIds.get(content.cid).isExpired ? (
+                      <span className="approval-badge expired">⏰ Approval Expired</span>
+                    ) : (
+                      <span className="approval-badge active">✅ Approved — Pay Now</span>
+                    )}
+                  </div>
+                )}
 
                 {/* Request Ownership Modal */}
                 {requestingFor === content.cid && (
@@ -643,6 +729,16 @@ function AllContents({ account, isContractConnected, refreshTrigger }) {
           background: rgba(251, 191, 36, 0.3);
         }
 
+        .action-btn.withdraw {
+          background: rgba(239, 68, 68, 0.15);
+          color: #ef4444;
+          border: 1px solid rgba(239, 68, 68, 0.4);
+        }
+
+        .action-btn.withdraw:hover {
+          background: rgba(239, 68, 68, 0.25);
+        }
+
         /* Request Modal */
         .request-modal {
           position: absolute;
@@ -693,6 +789,33 @@ function AllContents({ account, isContractConnected, refreshTrigger }) {
         .modal-actions {
           display: flex;
           gap: 10px;
+        }
+
+        .approval-status {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+
+        .approval-badge {
+          display: inline-block;
+          padding: 6px 14px;
+          border-radius: 20px;
+          font-size: 12px;
+          font-weight: 600;
+        }
+
+        .approval-badge.active {
+          background: rgba(16, 185, 129, 0.2);
+          color: #10b981;
+          border: 1px solid rgba(16, 185, 129, 0.4);
+        }
+
+        .approval-badge.expired {
+          background: rgba(239, 68, 68, 0.2);
+          color: #ef4444;
+          border: 1px solid rgba(239, 68, 68, 0.4);
         }
 
         @media (max-width: 768px) {

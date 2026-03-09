@@ -17,7 +17,7 @@ if(!RPC || !PRIVATE_KEY || !CONTRACT_ADDR){
   process.exit(1);
 }
 
-const provider = new ethers.providers.JsonRpcProvider(RPC);
+const provider = new ethers.JsonRpcProvider(RPC);
 const signer = new ethers.Wallet(PRIVATE_KEY, provider);
 const contract = new ethers.Contract(CONTRACT_ADDR, CONTRACT_ABI, signer);
 

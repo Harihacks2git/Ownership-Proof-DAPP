@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ethers } from 'ethers';
 import contractABI from '../../abi/ContentRegistry.json';
-import { CONTRACT_CONFIG } from '../../config';
+import { CONTRACT_CONFIG, PAYMENT_CONFIG } from '../../config';
 
 const contractAddress = CONTRACT_CONFIG.address;
 
@@ -18,7 +18,7 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [filter, setFilter] = useState('all'); // 'all', 'registered', 'transferred', 'requested'
+  const [filter, setFilter] = useState('all'); // 'all', 'registered', 'transferred', 'requested', 'approved'
 
   const loadHistory = useCallback(async () => {
     if (!isContractConnected) {
@@ -179,6 +179,66 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
         console.log('Could not load duplicate attempt events:', err.message);
       }
 
+      // Query ALL TransferApproved events (network-wide)
+      try {
+        const transferApprovedFilter = contract.filters.TransferApproved();
+        const transferApprovedEvents = await contract.queryFilter(transferApprovedFilter, 0, 'latest');
+        
+        for (const event of transferApprovedEvents) {
+          const block = await provider.getBlock(event.blockNumber);
+          allEvents.push({
+            type: 'Approved',
+            txHash: event.transactionHash,
+            blockNumber: event.blockNumber,
+            timestamp: block ? block.timestamp : 0,
+            actor: event.args.owner,
+            from: event.args.owner,
+            to: event.args.requester,
+            price: event.args.price,
+            details: `Transfer approved by ${event.args.owner?.substring(0, 10)}... for ${event.args.requester?.substring(0, 10)}... — awaiting payment`
+          });
+        }
+      } catch (err) {
+        console.log('Could not load transfer approved events:', err.message);
+      }
+
+      // Query ALL RequestWithdrawn events (network-wide)
+      try {
+        const withdrawnFilter = contract.filters.RequestWithdrawn();
+        const withdrawnEvents = await contract.queryFilter(withdrawnFilter, 0, 'latest');
+        
+        for (const event of withdrawnEvents) {
+          const block = await provider.getBlock(event.blockNumber);
+          allEvents.push({
+            type: 'Withdrawn',
+            txHash: event.transactionHash,
+            blockNumber: event.blockNumber,
+            timestamp: block ? block.timestamp : 0,
+            actor: event.args.requester,
+            details: `Request withdrawn by ${event.args.requester?.substring(0, 10)}...`
+          });
+        }
+      } catch (err) {
+        console.log('Could not load withdrawn events:', err.message);
+      }
+
+      // For ContentTransferred events, query Payment Server for payment status
+      for (const evt of allEvents) {
+        if (evt.type === 'Transferred' && evt.to) {
+          try {
+            const response = await fetch(`${PAYMENT_CONFIG.apiUrl}/payment-status/${encodeURIComponent('unknown')}/${evt.to}`);
+            if (response.ok) {
+              const data = await response.json();
+              evt.paymentStatus = data.status || 'unavailable';
+            } else {
+              evt.paymentStatus = 'unavailable';
+            }
+          } catch {
+            evt.paymentStatus = 'unavailable';
+          }
+        }
+      }
+
       // Sort by timestamp (newest first)
       allEvents.sort((a, b) => b.timestamp - a.timestamp);
       setTransactions(allEvents);
@@ -216,6 +276,8 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
       case 'Transferred': return 'transferred';
       case 'Requested': return 'requested';
       case 'Rejected': return 'rejected';
+      case 'Approved': return 'approved';
+      case 'Withdrawn': return 'withdrawn';
       case 'Duplicate Attempt': return 'duplicate';
       default: return '';
     }
@@ -227,6 +289,8 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
       case 'Transferred': return '🔄';
       case 'Requested': return '📤';
       case 'Rejected': return '❌';
+      case 'Approved': return '✅';
+      case 'Withdrawn': return '↩️';
       case 'Duplicate Attempt': return '🚨';
       default: return '📋';
     }
@@ -310,6 +374,18 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
         >
           🚨 Duplicate Attempts ({transactions.filter(t => t.type === 'Duplicate Attempt').length})
         </button>
+        <button 
+          className={`filter-tab ${filter === 'approved' ? 'active' : ''}`}
+          onClick={() => setFilter('approved')}
+        >
+          ✅ Approved ({transactions.filter(t => t.type === 'Approved').length})
+        </button>
+        <button 
+          className={`filter-tab ${filter === 'withdrawn' ? 'active' : ''}`}
+          onClick={() => setFilter('withdrawn')}
+        >
+          ↩️ Withdrawn ({transactions.filter(t => t.type === 'Withdrawn').length})
+        </button>
       </div>
 
       {/* Error Display */}
@@ -356,6 +432,21 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
                       <span className="timeline-time">{formatDate(tx.timestamp)}</span>
                     </div>
                     <p className="timeline-details">{tx.details}</p>
+                    {tx.paymentStatus && (
+                      <span className="payment-badge" style={{
+                        display: 'inline-block',
+                        padding: '4px 10px',
+                        borderRadius: '12px',
+                        fontSize: '11px',
+                        fontWeight: '600',
+                        marginBottom: '8px',
+                        background: tx.paymentStatus === 'completed' ? 'var(--success-bg)' : 'var(--bg-tertiary)',
+                        color: tx.paymentStatus === 'completed' ? 'var(--success-text)' : 'var(--text-muted)',
+                        border: `1px solid ${tx.paymentStatus === 'completed' ? 'var(--success-text)' : 'var(--border-color)'}`
+                      }}>
+                        {tx.paymentStatus === 'completed' ? '💳 Paid via Stripe' : '💳 Payment details unavailable'}
+                      </span>
+                    )}
                     <div className="timeline-meta">
                       <div className="meta-item">
                         <span className="meta-label">Tx Hash:</span>
@@ -398,7 +489,24 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
                           {getTypeIcon(tx.type)} {tx.type}
                         </span>
                       </td>
-                      <td className="details-cell">{tx.details}</td>
+                      <td className="details-cell">
+                        {tx.details}
+                        {tx.paymentStatus && (
+                          <span className="payment-badge" style={{
+                            display: 'inline-block',
+                            padding: '3px 8px',
+                            borderRadius: '10px',
+                            fontSize: '10px',
+                            fontWeight: '600',
+                            marginLeft: '8px',
+                            background: tx.paymentStatus === 'completed' ? 'var(--success-bg)' : 'var(--bg-tertiary)',
+                            color: tx.paymentStatus === 'completed' ? 'var(--success-text)' : 'var(--text-muted)',
+                            border: `1px solid ${tx.paymentStatus === 'completed' ? 'var(--success-text)' : 'var(--border-color)'}`
+                          }}>
+                            {tx.paymentStatus === 'completed' ? '💳 Paid via Stripe' : '💳 Payment details unavailable'}
+                          </span>
+                        )}
+                      </td>
                       {filter === 'requested' && (
                         <td>
                           {tx.status ? getStatusBadge(tx.status) : '-'}
@@ -599,6 +707,11 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
           background: rgba(239, 68, 68, 0.2);
         }
 
+        .timeline-item.approved .timeline-marker {
+          border-color: #10b981;
+          background: rgba(16, 185, 129, 0.2);
+        }
+
         .marker-icon {
           font-size: 18px;
         }
@@ -648,6 +761,21 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
         .type-badge.duplicate {
           background: rgba(239, 68, 68, 0.2);
           color: #ef4444;
+        }
+
+        .type-badge.approved {
+          background: rgba(16, 185, 129, 0.2);
+          color: #10b981;
+        }
+
+        .type-badge.withdrawn {
+          background: rgba(168, 85, 247, 0.2);
+          color: #a855f7;
+        }
+
+        .timeline-item.withdrawn .timeline-marker {
+          border-color: #a855f7;
+          background: rgba(168, 85, 247, 0.2);
         }
 
         .timeline-time {
