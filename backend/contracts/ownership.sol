@@ -26,6 +26,7 @@ contract ContentRegistry {
     mapping(string => Content) private contents; // keyed by contentID / CID or some ID
     mapping(address => string[]) private userContents;
     mapping(string => mapping(address => TransferRequest)) private transferRequests; // contentId => requester => request
+    mapping(string => address[]) private contentRequesters; // contentId => list of requester addresses
 
     event ContentRegistered(string indexed contentId, address indexed owner, uint256 timestamp);
     event ContentTransferred(string indexed contentId, address indexed from, address indexed to, uint256 timestamp);
@@ -141,6 +142,7 @@ contract ContentRegistry {
             isPending: true,
             timestamp: block.timestamp
         });
+        contentRequesters[contentId].push(msg.sender);
 
         emit OwnershipRequested(contentId, msg.sender, price, block.timestamp);
     }
@@ -163,11 +165,22 @@ contract ContentRegistry {
         c.timeHistory.push(block.timestamp);
         userContents[buyer].push(contentId);
 
+        // Auto-reject all other pending requests for this content
+        address[] storage requesters = contentRequesters[contentId];
+        for (uint256 i = 0; i < requesters.length; i++) {
+            if (requesters[i] != buyer) {
+                TransferRequest storage otherReq = transferRequests[contentId][requesters[i]];
+                if (otherReq.isPending) {
+                    otherReq.isPending = false;
+                    emit OwnershipRejected(contentId, prev, requesters[i], block.timestamp);
+                }
+            }
+        }
+        // Clear the requesters list since all requests are resolved
+        delete contentRequesters[contentId];
+
         emit OwnershipApproved(contentId, prev, buyer, block.timestamp);
         emit ContentTransferred(contentId, prev, buyer, block.timestamp);
-        
-        // Note: Other pending requests remain in state but can be cleaned up or ignored
-        // The frontend will handle showing them as rejected when ownership changes
     }
 
     // Reject transfer request (owner rejects)

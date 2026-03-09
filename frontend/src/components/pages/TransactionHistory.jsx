@@ -77,6 +77,53 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
         console.log('Could not load transfer events:', err.message);
       }
 
+      // Build lookup sets from OwnershipApproved and OwnershipRejected events
+      // so we can reliably determine request status
+      const approvedSet = new Set(); // "contentIdHash:requesterLower"
+      const rejectedSet = new Set();
+
+      // Query ALL OwnershipApproved events to build lookup for request status
+      try {
+        const approvedFilter = contract.filters.OwnershipApproved();
+        const approvedEvents = await contract.queryFilter(approvedFilter, 0, 'latest');
+
+        for (const event of approvedEvents) {
+          const buyerAddr = event.args.buyer;
+          const key = `${event.topics[1]}:${buyerAddr.toLowerCase()}`;
+          approvedSet.add(key);
+        }
+      } catch (err) {
+        console.log('Could not load approval events:', err.message);
+      }
+
+      // Query ALL OwnershipRejected events (network-wide)
+      try {
+        const rejectedFilter = contract.filters.OwnershipRejected();
+        const rejectedEvents = await contract.queryFilter(rejectedFilter, 0, 'latest');
+
+        for (const event of rejectedEvents) {
+          const block = await provider.getBlock(event.blockNumber);
+          const ownerAddr = event.args.owner;
+          const requesterAddr = event.args.requester;
+
+          const key = `${event.topics[1]}:${requesterAddr.toLowerCase()}`;
+          rejectedSet.add(key);
+
+          allEvents.push({
+            type: 'Rejected',
+            txHash: event.transactionHash,
+            blockNumber: event.blockNumber,
+            timestamp: block ? block.timestamp : 0,
+            actor: ownerAddr,
+            from: ownerAddr,
+            to: requesterAddr,
+            details: `Transfer rejected by ${ownerAddr?.substring(0, 10)}... for requester ${requesterAddr?.substring(0, 10)}...`
+          });
+        }
+      } catch (err) {
+        console.log('Could not load rejection events:', err.message);
+      }
+
       // Query ALL OwnershipRequested events (network-wide)
       try {
         const requestFilter = contract.filters.OwnershipRequested();
@@ -84,36 +131,15 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
         
         for (const event of requestEvents) {
           const block = await provider.getBlock(event.blockNumber);
-          const contentId = event.args.contentId;
           const requesterAddr = event.args.requester;
-          
-          // Get transfer request status for this specific requester
+
+          // Use the indexed contentId topic hash + requester to look up status
+          const key = `${event.topics[1]}:${requesterAddr.toLowerCase()}`;
           let status = 'Pending';
-          let statusDetails = 'Pending';
-          
-          try {
-            const transferReq = await contract.getTransferRequest(contentId, requesterAddr);
-            
-            if (!transferReq.isPending) {
-              // Check if it was approved (look for ContentTransferred event to this requester) or rejected
-              const transferredFilter = contract.filters.ContentTransferred(contentId);
-              const transferredEvents = await contract.queryFilter(transferredFilter, event.blockNumber, 'latest');
-              
-              // Check if transfer was to this specific requester
-              const transferToRequester = transferredEvents.find(te => 
-                te.args.to.toLowerCase() === requesterAddr.toLowerCase() && te.blockNumber > event.blockNumber
-              );
-              
-              if (transferToRequester) {
-                status = 'Approved';
-                statusDetails = 'Approved';
-              } else {
-                status = 'Rejected';
-                statusDetails = 'Rejected';
-              }
-            }
-          } catch (err) {
-            console.log('Could not determine request status:', err.message);
+          if (approvedSet.has(key)) {
+            status = 'Transferred';
+          } else if (rejectedSet.has(key)) {
+            status = 'Rejected';
           }
           
           allEvents.push({
@@ -122,16 +148,14 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
             blockNumber: event.blockNumber,
             timestamp: block ? block.timestamp : 0,
             actor: requesterAddr,
-            contentId: contentId,
+            contentId: event.args.contentId,
             status: status,
-            details: `Ownership requested by ${requesterAddr?.substring(0, 10)}... - ${statusDetails}`
+            details: `Ownership requested by ${requesterAddr?.substring(0, 10)}... - ${status}`
           });
         }
       } catch (err) {
         console.log('Could not load request events:', err.message);
       }
-
-
 
       // Query ALL DuplicateRegistrationAttempt events (network-wide)
       try {
@@ -191,6 +215,7 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
       case 'Registered': return 'registered';
       case 'Transferred': return 'transferred';
       case 'Requested': return 'requested';
+      case 'Rejected': return 'rejected';
       case 'Duplicate Attempt': return 'duplicate';
       default: return '';
     }
@@ -201,6 +226,7 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
       case 'Registered': return '📝';
       case 'Transferred': return '🔄';
       case 'Requested': return '📤';
+      case 'Rejected': return '❌';
       case 'Duplicate Attempt': return '🚨';
       default: return '📋';
     }
@@ -211,7 +237,7 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
     
     const statusColors = {
       'Pending': { bg: 'rgba(251, 191, 36, 0.2)', color: '#f59e0b' },
-      'Approved': { bg: 'var(--success-bg)', color: 'var(--success-text)' },
+      'Transferred': { bg: 'var(--success-bg)', color: 'var(--success-text)' },
       'Rejected': { bg: 'var(--error-bg)', color: 'var(--error-text)' }
     };
     
@@ -271,6 +297,12 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
           onClick={() => setFilter('requested')}
         >
           📤 Requested ({transactions.filter(t => t.type === 'Requested').length})
+        </button>
+        <button 
+          className={`filter-tab ${filter === 'rejected' ? 'active' : ''}`}
+          onClick={() => setFilter('rejected')}
+        >
+          ❌ Rejected ({transactions.filter(t => t.type === 'Rejected').length})
         </button>
         <button 
           className={`filter-tab ${filter === 'duplicate attempt' ? 'active' : ''}`}
@@ -557,6 +589,11 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
           background: rgba(251, 191, 36, 0.2);
         }
 
+        .timeline-item.rejected .timeline-marker {
+          border-color: #ef4444;
+          background: rgba(239, 68, 68, 0.2);
+        }
+
         .timeline-item.duplicate .timeline-marker {
           border-color: #ef4444;
           background: rgba(239, 68, 68, 0.2);
@@ -601,6 +638,11 @@ function TransactionHistory({ account, isContractConnected, refreshTrigger }) {
         .type-badge.requested {
           background: rgba(251, 191, 36, 0.2);
           color: #f59e0b;
+        }
+
+        .type-badge.rejected {
+          background: rgba(239, 68, 68, 0.2);
+          color: #ef4444;
         }
 
         .type-badge.duplicate {

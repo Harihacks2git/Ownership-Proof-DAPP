@@ -44,6 +44,12 @@ function Alerts({ account, isContractConnected, refreshTrigger }) {
       // Load transfer requests for owned content
       for (const cid of userCids) {
         try {
+          // Verify current user is still the actual owner of this content
+          const contentData = await contract.getContent(cid);
+          if (contentData.owner.toLowerCase() !== account.toLowerCase()) {
+            continue; // Skip — ownership has transferred to someone else
+          }
+
           const requestFilter = contract.filters.OwnershipRequested(cid);
           const requestEvents = await contract.queryFilter(requestFilter, 0, 'latest');
           
