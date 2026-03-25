@@ -127,7 +127,7 @@ function App() {
       <style>{`
         .login-page {
           min-height: 100vh;
-          background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+          background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
           display: flex;
           align-items: center;
           justify-content: center;
